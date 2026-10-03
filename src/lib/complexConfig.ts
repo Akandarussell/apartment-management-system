@@ -1,0 +1,18 @@
+export const COMPLEX_CONFIG = {
+  name: 'Ma Babar Doa Apartment Complex',
+  shortName: 'MBD Complex',
+  tagline: 'Residential Apartment Complex ERP',
+  address: '72/32 M Rahman Nursing College Road, City Bypass, Horogram Purbopara, Dingadoba Rajshahi-6201.',
+  fullAddress: '72/32 M Rahman Nursing College Road, City Bypass, Horogram Purbopara, Dingadoba Rajshahi-6201, Bangladesh',
+  contacts: '01737-321998 (Manager), 01913-858775 (Raju)',
+  managerPhone: '01737-321998',
+  rajuPhone: '01913-858775',
+  managerName: 'Russell (Manager)',
+  city: 'Rajshahi',
+  postalCode: '6201',
+  division: 'Rajshahi Division',
+  country: 'Bangladesh',
+  currency: 'BDT (৳)',
+  timezone: 'Asia/Dhaka',
+  nescoZone: 'NESCO Sales & Distribution Division, Rajshahi',
+};
