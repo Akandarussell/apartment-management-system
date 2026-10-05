@@ -95,16 +95,16 @@ export async function testRemoteSupabaseConnection(): Promise<SupabaseConnection
 }
 
 // Cached detected period column name on remote database: 'period' | 'billing_period'
-let activePeriodColumn: 'period' | 'billing_period' = 'period';
+let activePeriodColumn: 'period' | 'billing_period' = 'billing_period';
 
 /**
  * Resolves which column name ('period' or 'billing_period') is supported on monthly_rent_records.
- * Defaults strictly to 'period' as defined in the Supabase schema.
+ * Defaults strictly to 'billing_period' matching the primary database schema and unique constraint.
  */
 async function resolvePeriodColumn(supabase: any): Promise<'period' | 'billing_period'> {
   if (activePeriodColumn) return activePeriodColumn;
-  activePeriodColumn = 'period';
-  return 'period';
+  activePeriodColumn = 'billing_period';
+  return 'billing_period';
 }
 
 /**
@@ -201,7 +201,7 @@ export function mapDbRowToMonthlyLedgerItem(
     advanceDate: item.advanceDate || item.advance_date || undefined,
     flatRent,
     rentStatus,
-    rentPaymentDate: item.rent_payment_date || item.payment_date || undefined,
+    rentPaymentDate: item.rent_payment_date || item.last_payment_date || item.payment_date || undefined,
     electricityBill,
     electricityStatus: item.electricity_status || item.e_bill_status || (electricityBill > 0 ? 'Not Paid' : 'N/A'),
     electricityDate: item.electricity_date || undefined,
@@ -297,13 +297,25 @@ export async function fetchRemoteMonthlyRentRecords(
  * 2. Contains all required non-null fields: period, unit_id, block_key, tenant_name, tenant_phone, flat_rent, rent_status, paid_amount, due_amount, electricity_bill, electricity_status
  */
 // Set of columns reported by PostgREST as not existing in schema cache
-const unsupportedColumns = new Set<string>();
+// 'tenant_id', 'total_due', 'total_paid', 'total_payable', 'advance_paid', 'e_bill_amount', 'e_bill_status', 'adjustment_amount', 'rent_payment_date', and 'electricity_date' are excluded by default
+const unsupportedColumns = new Set<string>([
+  'tenant_id',
+  'total_due',
+  'total_paid',
+  'total_payable',
+  'advance_paid',
+  'e_bill_amount',
+  'e_bill_status',
+  'adjustment_amount',
+  'rent_payment_date',
+  'electricity_date',
+]);
 
 /**
  * Helper to build payload matching the database schema.
  * Ensures block_key, monthly_rent, flat_rent and all required non-null fields are always explicitly defined.
  * 1. Maps block_key properly from flat record or derives from unit ID prefix (A -> blockA, B -> blockB, C -> blockC)
- * 2. Contains all required non-null fields: period, unit_id, block_key, tenant_name, tenant_phone, monthly_rent, flat_rent, rent_status, paid_amount, due_amount, electricity_bill, electricity_status
+ * 2. Contains all required non-null fields: period, unit_id, block_key, tenant_name, tenant_phone, monthly_rent, flat_rent, rent_status, paid_amount, due_amount, electricity_bill, electricity_status, last_payment_date
  */
 export function buildUpsertPayload(flat: any, selectedPeriod: string): Record<string, any> {
   let cleanId = '';
@@ -371,6 +383,11 @@ export function buildUpsertPayload(flat: any, selectedPeriod: string): Record<st
   const totalPayable = Number(flat.total_payable ?? flat.totalPayable ?? (flatRent + eBillAmount + parkingRent + godownRent));
   const paymentStatus = normalizePaymentStatus(flat.payment_status || flat.paymentStatus || (dueAmount === 0 && totalPayable > 0 ? 'Paid' : paidAmount > 0 ? 'Partially Paid' : 'Not Paid'));
 
+  const rawAdvDate = flat.advance_date || flat.advanceDate;
+  const rawRentDate = flat.rent_payment_date || flat.rentPaymentDate;
+  const rawElecDate = flat.electricity_date || flat.electricityDate;
+  const rawLastDate = flat.last_payment_date || flat.lastPaymentDate || rawRentDate || rawElecDate || rawAdvDate;
+
   const payload: Record<string, any> = {
     // Both 'period' and 'billing_period' to satisfy either database column schema
     period: selectedPeriod, // e.g. '2026-10'
@@ -379,7 +396,6 @@ export function buildUpsertPayload(flat: any, selectedPeriod: string): Record<st
     flat_id: unitId,
     block_key: blockKey,
     block_name: blockName,
-    tenant_id: flat.tenant_id || flat.tenantId || '',
     tenant_name: flat.tenant_name || flat.tenant || flat.tenantName || 'Resident',
     tenant_phone: flat.tenant_phone || flat.phone || flat.tenantPhone || '',
     entry_date: flat.entry_date || flat.entryDate || '2026-01-01',
@@ -387,21 +403,17 @@ export function buildUpsertPayload(flat: any, selectedPeriod: string): Record<st
     year: yearNum,
     advance_payment: advancePayment,
     advance_status: advanceStatus,
-    advance_date: flat.advance_date || flat.advanceDate || undefined,
+    advance_date: rawAdvDate ? String(rawAdvDate).slice(0, 10) : null,
     flat_rent: flatRent,
     monthly_rent: flatRent, // satisfies NOT NULL constraint on monthly_rent
     rent_status: rentStatus,
-    rent_payment_date: flat.rent_payment_date || flat.rentPaymentDate || undefined,
+    last_payment_date: rawLastDate ? String(rawLastDate).slice(0, 10) : null,
     paid_amount: paidAmount,
-    total_paid: paidAmount,
     due_amount: dueAmount,
-    total_due: dueAmount,
-    total_payable: totalPayable,
     payment_status: paymentStatus,
     electricity_bill: eBillAmount,
     electricity_status: electricityStatus,
-    electricity_date: flat.electricity_date || flat.electricityDate || undefined,
-    parking_rent: parkingRent,
+    parking_rent: 0,
     godown_rent: godownRent,
     adjusted_from_advance: adjustedFromAdvance,
     notes: flat.notes || '',
@@ -445,20 +457,65 @@ export async function upsertRemoteMonthlyRentRecord(
   // Retry loop handles stale PostgREST schema cache (PGRST204) by stripping any uncached columns
   for (let attempt = 0; attempt < 10; attempt++) {
     try {
-      // 1. Try upsert with onConflict on (unit_id, period) or (unit_id, billing_period)
+      // Clean payload against current unsupportedColumns
+      for (const col of unsupportedColumns) {
+        delete payload[col];
+      }
+
+      // 1. Try upsert with onConflict on (unit_id, billing_period) or (unit_id, period)
       const conflictCol = activePeriodColumn === 'billing_period' ? 'unit_id,billing_period' : 'unit_id,period';
       let { data, error } = await supabase
         .from('monthly_rent_records')
         .upsert(payload, { onConflict: conflictCol })
-        .select();
+        .select('id');
 
       if (!error) {
         console.log(`[Supabase Upsert OK] Flat ${payload.unit_id} (block_key: "${payload.block_key}") saved successfully to monthly_rent_records:`, data);
-        return { success: true, data };
+        return { success: true, data: data || { unit_id: payload.unit_id } };
       }
 
       let currentError = error;
       lastError = error;
+
+      // Handle PostgREST schema cache missing column (PGRST204) immediately
+      if (currentError.code === 'PGRST204' || currentError.message?.includes('schema cache') || currentError.message?.includes('column')) {
+        const match =
+          currentError.message.match(/Could not find the '([^']+)' column/i) ||
+          currentError.message.match(/'([^']+)' column/i) ||
+          currentError.message.match(/column ['"]([^'"]+)['"] of relation/i) ||
+          currentError.message.match(/column "([^"]+)"/i);
+        const colName = match ? match[1] : null;
+        if (colName) {
+          console.warn(`[Supabase Schema Notice] Column '${colName}' not found in PostgREST schema cache; stripping and remembering...`);
+          unsupportedColumns.add(colName);
+          delete payload[colName];
+
+          // Also attempt simple upsert without select
+          try {
+            const noSelectRes = await supabase
+              .from('monthly_rent_records')
+              .upsert(payload, { onConflict: conflictCol });
+            if (!noSelectRes.error) {
+              console.log(`[Supabase Upsert OK Minimal] Flat ${payload.unit_id} saved successfully.`);
+              return { success: true, data: { unit_id: payload.unit_id } };
+            }
+            if (noSelectRes.error.code === 'PGRST204' || noSelectRes.error.message?.includes('schema cache') || noSelectRes.error.message?.includes('column')) {
+              const m2 =
+                noSelectRes.error.message.match(/Could not find the '([^']+)' column/i) ||
+                noSelectRes.error.message.match(/'([^']+)' column/i) ||
+                noSelectRes.error.message.match(/column ['"]([^'"]+)['"] of relation/i) ||
+                noSelectRes.error.message.match(/column "([^"]+)"/i);
+              if (m2?.[1]) {
+                unsupportedColumns.add(m2[1]);
+                delete payload[m2[1]];
+              }
+            }
+          } catch {
+            // continue retry loop
+          }
+          continue;
+        }
+      }
 
       // If missing unique constraint matching onConflict specification (error 42P10), try alternate conflict target
       if (error.code === '42P10' || error.message?.includes('ON CONFLICT specification') || error.message?.includes('exclusion constraint')) {
@@ -466,31 +523,71 @@ export async function upsertRemoteMonthlyRentRecord(
         const altRes = await supabase
           .from('monthly_rent_records')
           .upsert(payload, { onConflict: altConflict })
-          .select();
+          .select('id');
 
         if (!altRes.error) {
+          activePeriodColumn = altConflict === 'unit_id,billing_period' ? 'billing_period' : 'period';
           console.log(`[Supabase Upsert OK with ${altConflict}] Flat ${payload.unit_id} saved successfully:`, altRes.data);
-          return { success: true, data: altRes.data };
+          return { success: true, data: altRes.data || { unit_id: payload.unit_id } };
+        }
+
+        if (altRes.error.code === 'PGRST204' || altRes.error.message?.includes('schema cache') || altRes.error.message?.includes('column')) {
+          const match =
+            altRes.error.message.match(/Could not find the '([^']+)' column/i) ||
+            altRes.error.message.match(/'([^']+)' column/i) ||
+            altRes.error.message.match(/column ['"]([^'"]+)['"] of relation/i) ||
+            altRes.error.message.match(/column "([^"]+)"/i);
+          const colName = match ? match[1] : null;
+          if (colName) {
+            console.warn(`[Supabase Schema Notice] Column '${colName}' not found in PostgREST schema cache; stripping and remembering...`);
+            unsupportedColumns.add(colName);
+            delete payload[colName];
+            continue;
+          }
         }
 
         console.warn(`[Supabase Notice] No unique constraint on (${conflictCol}); saving Flat ${payload.unit_id} via find-and-update/insert...`);
-        const { data: existing } = await supabase
-          .from('monthly_rent_records')
-          .select('id')
-          .eq('unit_id', payload.unit_id)
-          .or(`period.eq.${payload.period},billing_period.eq.${payload.billing_period || payload.period}`)
-          .maybeSingle();
+        const queryCol = activePeriodColumn === 'period' ? 'period' : 'billing_period';
+        const queryPeriod = payload[queryCol] || payload.billing_period || payload.period;
+        let existingId: string | null = null;
+        try {
+          const { data: exRow, error: exErr } = await supabase
+            .from('monthly_rent_records')
+            .select('id')
+            .eq('unit_id', payload.unit_id)
+            .eq(queryCol, queryPeriod)
+            .maybeSingle();
 
-        if (existing?.id) {
+          if (!exErr && exRow?.id) {
+            existingId = exRow.id;
+          } else if (exErr) {
+            const altCol = queryCol === 'period' ? 'billing_period' : 'period';
+            const altP = payload[altCol] || queryPeriod;
+            const { data: altExRow } = await supabase
+              .from('monthly_rent_records')
+              .select('id')
+              .eq('unit_id', payload.unit_id)
+              .eq(altCol, altP)
+              .maybeSingle();
+            if (altExRow?.id) {
+              existingId = altExRow.id;
+              activePeriodColumn = altCol;
+            }
+          }
+        } catch {
+          // ignore lookup errors and fall through
+        }
+
+        if (existingId) {
           const updateRes = await supabase
             .from('monthly_rent_records')
             .update(payload)
-            .eq('id', existing.id)
-            .select();
+            .eq('id', existingId)
+            .select('id');
 
           if (!updateRes.error) {
             console.log(`[Supabase Update OK] Flat ${payload.unit_id} updated successfully via ID:`, updateRes.data);
-            return { success: true, data: updateRes.data };
+            return { success: true, data: updateRes.data || { id: existingId, unit_id: payload.unit_id } };
           }
           currentError = updateRes.error;
           lastError = updateRes.error;
@@ -498,26 +595,28 @@ export async function upsertRemoteMonthlyRentRecord(
           const insertRes = await supabase
             .from('monthly_rent_records')
             .insert(payload)
-            .select();
+            .select('id');
 
           if (!insertRes.error) {
             console.log(`[Supabase Insert OK] Flat ${payload.unit_id} inserted successfully:`, insertRes.data);
-            return { success: true, data: insertRes.data };
+            return { success: true, data: insertRes.data || { unit_id: payload.unit_id } };
           }
           currentError = insertRes.error;
           lastError = insertRes.error;
         }
-      }
 
-      // If PostgREST schema cache is stale for a specific column (PGRST204)
-      if (currentError.code === 'PGRST204' || currentError.message?.includes('schema cache')) {
-        const match = currentError.message.match(/Could not find the '([^']+)' column/) || currentError.message.match(/'([^']+)' column/);
-        const colName = match ? match[1] : null;
-        if (colName && colName in payload) {
-          console.warn(`[Supabase Schema Notice] Column '${colName}' not found in PostgREST schema cache; stripping and remembering...`);
-          unsupportedColumns.add(colName);
-          delete payload[colName];
-          continue;
+        if (currentError.code === 'PGRST204' || currentError.message?.includes('schema cache') || currentError.message?.includes('column')) {
+          const match =
+            currentError.message.match(/Could not find the '([^']+)' column/i) ||
+            currentError.message.match(/'([^']+)' column/i) ||
+            currentError.message.match(/column ['"]([^'"]+)['"] of relation/i) ||
+            currentError.message.match(/column "([^"]+)"/i);
+          const colName = match ? match[1] : null;
+          if (colName) {
+            unsupportedColumns.add(colName);
+            delete payload[colName];
+            continue;
+          }
         }
       }
 
@@ -533,7 +632,7 @@ export async function upsertRemoteMonthlyRentRecord(
 }
 
 /**
- * Batch Upsert multiple monthly rent records into Supabase on (unit_id, period)
+ * Batch Upsert multiple monthly rent records into Supabase on (unit_id, billing_period)
  * with explicit block_key, resilient schema cache tolerance, and conflict fallback.
  */
 export async function upsertBatchRemoteMonthlyRentRecords(
@@ -564,11 +663,20 @@ export async function upsertBatchRemoteMonthlyRentRecords(
 
   for (let attempt = 0; attempt < 10; attempt++) {
     try {
+      // Ensure records do not contain any known unsupportedColumns
+      currentRecords = currentRecords.map((r: any) => {
+        const copy = { ...r };
+        for (const col of unsupportedColumns) {
+          delete copy[col];
+        }
+        return copy;
+      });
+
       const conflictCol = activePeriodColumn === 'billing_period' ? 'unit_id,billing_period' : 'unit_id,period';
       let { data, error } = await supabase
         .from('monthly_rent_records')
         .upsert(currentRecords, { onConflict: conflictCol })
-        .select();
+        .select('id');
 
       if (!error) {
         console.log(`[Supabase Batch Upsert OK] Successfully saved ${currentRecords.length} records with explicit block_key.`);
@@ -578,17 +686,56 @@ export async function upsertBatchRemoteMonthlyRentRecords(
       let currentError = error;
       lastBatchError = error;
 
+      // Handle PostgREST schema cache missing column (PGRST204) immediately
+      if (currentError.code === 'PGRST204' || currentError.message?.includes('schema cache') || currentError.message?.includes('column')) {
+        const match =
+          currentError.message.match(/Could not find the '([^']+)' column/i) ||
+          currentError.message.match(/'([^']+)' column/i) ||
+          currentError.message.match(/column ['"]([^'"]+)['"] of relation/i) ||
+          currentError.message.match(/column "([^"]+)"/i);
+        const colName = match ? match[1] : null;
+        if (colName) {
+          console.warn(`[Supabase Batch Notice] Column '${colName}' not found in PostgREST schema cache; stripping and remembering...`);
+          unsupportedColumns.add(colName);
+          currentRecords = currentRecords.map((r: any) => {
+            const copy = { ...r };
+            delete copy[colName];
+            return copy;
+          });
+          continue;
+        }
+      }
+
       // If missing unique constraint matching onConflict specification, try alternate conflict target
       if (error.code === '42P10' || error.message?.includes('ON CONFLICT specification') || error.message?.includes('exclusion constraint')) {
         const altConflict = conflictCol === 'unit_id,period' ? 'unit_id,billing_period' : 'unit_id,period';
         const altRes = await supabase
           .from('monthly_rent_records')
           .upsert(currentRecords, { onConflict: altConflict })
-          .select();
+          .select('id');
 
         if (!altRes.error) {
+          activePeriodColumn = altConflict === 'unit_id,billing_period' ? 'billing_period' : 'period';
           console.log(`[Supabase Batch Upsert OK with ${altConflict}] Successfully saved ${currentRecords.length} records.`);
           return { success: true, count: currentRecords.length };
+        }
+
+        if (altRes.error.code === 'PGRST204' || altRes.error.message?.includes('schema cache') || altRes.error.message?.includes('column')) {
+          const match =
+            altRes.error.message.match(/Could not find the '([^']+)' column/i) ||
+            altRes.error.message.match(/'([^']+)' column/i) ||
+            altRes.error.message.match(/column ['"]([^'"]+)['"] of relation/i) ||
+            altRes.error.message.match(/column "([^"]+)"/i);
+          const colName = match ? match[1] : null;
+          if (colName) {
+            unsupportedColumns.add(colName);
+            currentRecords = currentRecords.map((r: any) => {
+              const copy = { ...r };
+              delete copy[colName];
+              return copy;
+            });
+            continue;
+          }
         }
 
         console.warn(`[Supabase Batch Notice] No unique constraint on (${conflictCol}); saving records individually via find-and-update/insert...`);
@@ -606,22 +753,6 @@ export async function upsertBatchRemoteMonthlyRentRecords(
           return { success: true, count: savedCount };
         }
         return { success: false, count: 0, error: singleErrors[0] || currentError };
-      }
-
-      // If PostgREST schema cache is missing a column (PGRST204)
-      if (currentError.code === 'PGRST204' || currentError.message?.includes('schema cache')) {
-        const match = currentError.message.match(/Could not find the '([^']+)' column/) || currentError.message.match(/'([^']+)' column/);
-        const colName = match ? match[1] : null;
-        if (colName) {
-          console.warn(`[Supabase Batch Notice] Column '${colName}' not found in PostgREST schema cache; stripping and remembering...`);
-          unsupportedColumns.add(colName);
-          currentRecords = currentRecords.map((r: any) => {
-            const copy = { ...r };
-            delete copy[colName];
-            return copy;
-          });
-          continue;
-        }
       }
 
       console.error('[Supabase Batch Upsert Error]:', currentError.message, currentError);

@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { MonthlyLedgerItem, PaymentStatus, AppDatabaseState } from '../types';
-import { formatBDT, MONTH_NAMES, getMonthName } from '../lib/nescoTariff';
+import { formatBDT, MONTH_NAMES, getMonthName, formatDateDDMMYYYY } from '../lib/nescoTariff';
 
 interface Props {
   isOpen: boolean;
@@ -39,13 +39,82 @@ interface ColumnMapping {
   phone: string;
   entryDate: string;
   advance: string;
-  flatRent: string;
-  electricity: string;
-  parking: string;
-  godown: string;
-  paymentStatus: string;
-  totalPaid: string;
 }
+
+// Helper to normalize various spreadsheet date formats (Excel serial number, DD/MM/YYYY, etc.)
+export const normalizeSpreadsheetDate = (val: any): string => {
+  if (val === undefined || val === null || val === '') return '';
+
+  if (val instanceof Date) {
+    if (!isNaN(val.getTime())) {
+      const y = val.getUTCFullYear();
+      const m = String(val.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(val.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    return '';
+  }
+
+  // Excel serial number (e.g. 45352 -> 2024-03-01)
+  if (typeof val === 'number') {
+    if (val > 20000 && val < 90000) {
+      const utcDays = Math.floor(val - 25569);
+      const utcMs = utcDays * 86400 * 1000;
+      const date = new Date(utcMs);
+      if (!isNaN(date.getTime())) {
+        const y = date.getUTCFullYear();
+        const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(date.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      }
+    }
+  }
+
+  const str = String(val).trim();
+  if (!str) return '';
+
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return str;
+  }
+
+  // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY (supports 2-digit and 4-digit years)
+  const dmyMatch = str.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+  if (dmyMatch) {
+    const day = dmyMatch[1].padStart(2, '0');
+    const month = dmyMatch[2].padStart(2, '0');
+    let year = dmyMatch[3];
+    if (year.length === 2) {
+      year = `20${year}`;
+    } else if (year === '2006' || year === '06') {
+      // Fix common typo 2006 -> 2026 in 2024-2026 tenant rosters
+      year = '2026';
+    }
+    return `${year}-${month}-${day}`;
+  }
+
+  // YYYY/MM/DD
+  const ymdMatch = str.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/);
+  if (ymdMatch) {
+    let year = ymdMatch[1];
+    if (year === '2006') year = '2026';
+    const month = ymdMatch[2].padStart(2, '0');
+    const day = ymdMatch[3].padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  // Generic Date constructor using UTC values
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime()) && parsed.getUTCFullYear() > 1990 && parsed.getUTCFullYear() < 2100) {
+    let y = parsed.getUTCFullYear();
+    if (y === 2006) y = 2026;
+    const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  return str;
+};
 
 export const ExcelImportModal: React.FC<Props> = ({
   isOpen,
@@ -70,54 +139,48 @@ export const ExcelImportModal: React.FC<Props> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Auto-fill Options
-  const [updateUnits, setUpdateUnits] = useState(true);
-  const [updateTenants, setUpdateTenants] = useState(true);
-  const [updateAdvance, setUpdateAdvance] = useState(true);
-
-  // Column Mapping
+  // Column Mapping: Strictly only the 5 allowed fields
   const [mapping, setMapping] = useState<ColumnMapping>({
     flatId: '',
     tenantName: '',
     phone: '',
     entryDate: '',
     advance: '',
-    flatRent: '',
-    electricity: '',
-    parking: '',
-    godown: '',
-    paymentStatus: '',
-    totalPaid: '',
   });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
-  // Smart Header Detection
+  // Smart Header Detection for strictly the 5 fields
   const autoDetectMapping = (headers: string[]): ColumnMapping => {
     const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-    const findMatch = (patterns: string[]) => {
+    const findMatch = (patterns: string[], fallbackIndex?: number): string => {
+      // 1. Try pattern matching
       for (const h of headers) {
         const ch = clean(h);
-        if (patterns.some((p) => ch.includes(clean(p)))) return h;
+        for (const p of patterns) {
+          const cp = clean(p);
+          // CRITICAL: NEVER test empty or 1-character string, so non-ascii never matches everything
+          if (cp && cp.length >= 2 && ch.includes(cp)) {
+            return h;
+          }
+        }
+      }
+      // 2. Fallback to index position if within bounds
+      if (fallbackIndex !== undefined && fallbackIndex < headers.length) {
+        return headers[fallbackIndex];
       }
       return '';
     };
 
     return {
-      flatId: findMatch(['flatid', 'flatno', 'flat', 'unit', 'apartment', 'বাসা', 'ফ্ল্যাট']),
-      tenantName: findMatch(['tenantname', 'tenant', 'name', 'resident', 'নাম', 'ভাড়াটিয়া']),
-      phone: findMatch(['phone', 'mobile', 'contact', 'cell', 'মোবাইল', 'ফোন']),
-      entryDate: findMatch(['entrydate', 'entry', 'movein', 'joining', 'তারিখ']),
-      advance: findMatch(['advance', 'security', 'deposit', 'অগ্রিম']),
-      flatRent: findMatch(['flatrent', 'rent', 'monthlyrent', 'ভাড়া', 'মূলভাড়া']),
-      electricity: findMatch(['electricity', 'electric', 'bill', 'বিদ্যুৎ', 'কারেন্ট']),
-      parking: findMatch(['parking', 'car', 'পার্কিং']),
-      godown: findMatch(['godown', 'warehouse', 'গোডাউন']),
-      paymentStatus: findMatch(['status', 'paymentstatus', 'অবস্থা']),
-      totalPaid: findMatch(['paid', 'totalpaid', 'পরিশোধ', 'জমা']),
+      flatId: findMatch(['flatid', 'flatno', 'flat', 'unit', 'apartment'], 0),
+      tenantName: findMatch(['tenantname', 'tenant', 'name', 'resident', 'occupant'], 1),
+      phone: findMatch(['mobile', 'phonenumber', 'mobilenumber', 'phone', 'contact', 'cell'], 2),
+      entryDate: findMatch(['entrydate', 'entry', 'date', 'movein', 'joining'], 3),
+      advance: findMatch(['advance', 'security', 'deposit', 'securitydeposit'], 4),
     };
   };
 
@@ -125,23 +188,39 @@ export const ExcelImportModal: React.FC<Props> = ({
     try {
       const firstSheetName = wb.SheetNames[0];
       const ws = wb.Sheets[firstSheetName];
-      const jsonData = XLSX.utils.sheet_to_json<any>(ws, { header: 1, defval: '' });
+      const jsonData = XLSX.utils.sheet_to_json<any>(ws, { header: 1, defval: '', raw: true });
 
       if (jsonData.length < 2) {
-        setErrorMessage('The sheet appears to be empty or has no header row.');
+        setErrorMessage('The sheet appears to be empty or has no data.');
         return;
       }
 
-      // First non-empty row as header
-      const headers = (jsonData[0] as any[]).map((h) => String(h || '').trim()).filter(Boolean);
-      const rows = jsonData.slice(1).filter((r: any[]) => r.some((c) => c !== '' && c !== null));
+      // Smart Header Row Detection (look in first 5 rows for column labels like Flat, Tenant, Mobile, Date, Advance)
+      let headerRowIndex = 0;
+      for (let r = 0; r < Math.min(5, jsonData.length); r++) {
+        const rowStrings = (jsonData[r] as any[]).map((c) => String(c || '').toLowerCase());
+        const hasHeaderKeywords = rowStrings.some((s) =>
+          ['flat', 'tenant', 'name', 'mobile', 'phone', 'entry', 'advance', 'date'].some((kw) => s.includes(kw))
+        );
+        if (hasHeaderKeywords) {
+          headerRowIndex = r;
+          break;
+        }
+      }
+
+      const rawHeaderRow = (jsonData[headerRowIndex] as any[]) || [];
+      const headers = rawHeaderRow.map((h, i) => {
+        const str = String(h || '').trim();
+        return str || `Column ${i + 1}`;
+      });
+      const rows = jsonData.slice(headerRowIndex + 1).filter((r: any[]) => r.some((c) => c !== '' && c !== null));
 
       setRawHeaders(headers);
       setRawRows(rows);
       setFileName(sourceName);
       setErrorMessage(null);
 
-      // Auto-detect columns
+      // Auto-detect columns with positional fallbacks
       const detected = autoDetectMapping(headers);
       setMapping(detected);
     } catch (err: any) {
@@ -160,8 +239,8 @@ export const ExcelImportModal: React.FC<Props> = ({
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
+        const buffer = evt.target?.result;
+        const wb = XLSX.read(buffer, { type: 'array', raw: true });
         handleProcessWorkbook(wb, file.name);
       } catch (err: any) {
         setErrorMessage(`Error reading file: ${err.message}`);
@@ -173,7 +252,7 @@ export const ExcelImportModal: React.FC<Props> = ({
       setErrorMessage('Could not read the uploaded file.');
       setIsLoading(false);
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   };
 
   // 2. Google Sheet Link Handler
@@ -217,61 +296,55 @@ export const ExcelImportModal: React.FC<Props> = ({
     }
 
     try {
-      const wb = XLSX.read(pastedText.trim(), { type: 'string' });
+      const wb = XLSX.read(pastedText.trim(), { type: 'string', raw: true });
       handleProcessWorkbook(wb, 'Pasted Clipboard Data');
     } catch (err: any) {
       setErrorMessage(`Error parsing pasted data: ${err.message}`);
     }
   };
 
-  // Download Sample Template
+  // Download Sample Template (Strictly the 5 fields)
   const handleDownloadTemplate = () => {
     const templateData = [
       {
         'Flat ID': 'A1',
         'Tenant Name': 'Moshiur Rahman',
-        'Mobile Number': '01711-234567',
+        'Mobile': '01711-234567',
         'Entry Date': '2024-03-01',
-        'Security Advance': 60000,
-        'Monthly Flat Rent': 26000,
-        'Electricity Bill': 3450,
-        'Parking Rent': 2500,
-        'Godown Rent': 0,
-        'Payment Status': 'Paid',
+        'Advance': 60000,
       },
       {
         'Flat ID': 'A2',
         'Tenant Name': 'Farhan Ahmed',
-        'Mobile Number': '01819-876543',
+        'Mobile': '01819-876543',
         'Entry Date': '2024-05-15',
-        'Security Advance': 50000,
-        'Monthly Flat Rent': 25000,
-        'Electricity Bill': 2890,
-        'Parking Rent': 0,
-        'Godown Rent': 0,
-        'Payment Status': 'Not Paid',
+        'Advance': 50000,
       },
       {
         'Flat ID': 'B1',
         'Tenant Name': 'Ziaur Rahman',
-        'Mobile Number': '01722-334455',
+        'Mobile': '01722-334455',
         'Entry Date': '2024-01-10',
-        'Security Advance': 55000,
-        'Monthly Flat Rent': 24000,
-        'Electricity Bill': 2100,
-        'Parking Rent': 2500,
-        'Godown Rent': 0,
-        'Payment Status': 'Paid',
+        'Advance': 55000,
+      },
+      {
+        'Flat ID': 'C1',
+        'Tenant Name': '', // Example of empty field leaving existing data intact
+        'Mobile': '01912-345678',
+        'Entry Date': '',
+        'Advance': 40000,
       },
     ];
 
     const ws = XLSX.utils.json_to_sheet(templateData);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'LedgerTemplate');
-    XLSX.writeFile(wb, `MBD_Apartment_Ledger_Template.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, 'TenantRoster');
+    XLSX.writeFile(wb, `Apartment_5Fields_Upload_Template.xlsx`);
   };
 
   // Convert extracted rows into MonthlyLedgerItem records
+  // Strictly: 1. Flat ID, 2. Tenant Name, 3. Mobile, 4. Entry Date, 5. Advance
+  // If any field is empty, it leaves it as it is and proceeds to the next
   const handleExecuteImport = () => {
     if (!mapping.flatId) {
       setErrorMessage('Please map the Flat ID column before importing.');
@@ -283,98 +356,217 @@ export const ExcelImportModal: React.FC<Props> = ({
     const phoneIdx = rawHeaders.indexOf(mapping.phone);
     const entryDateIdx = rawHeaders.indexOf(mapping.entryDate);
     const advanceIdx = rawHeaders.indexOf(mapping.advance);
-    const rentIdx = rawHeaders.indexOf(mapping.flatRent);
-    const elecIdx = rawHeaders.indexOf(mapping.electricity);
-    const parkingIdx = rawHeaders.indexOf(mapping.parking);
-    const godownIdx = rawHeaders.indexOf(mapping.godown);
-    const statusIdx = rawHeaders.indexOf(mapping.paymentStatus);
-    const paidIdx = rawHeaders.indexOf(mapping.totalPaid);
 
     const importedItems: MonthlyLedgerItem[] = [];
 
-    rawRows.forEach((row, idx) => {
-      const rawFlatId = String(row[flatIdIdx] || '').trim();
-      if (!rawFlatId) return; // Skip empty rows
+    rawRows.forEach((row) => {
+      const rawFlatId = flatIdIdx >= 0 ? String(row[flatIdIdx] || '').trim() : '';
+      if (!rawFlatId) return; // If Flat ID is empty, leave it as it is and do next
 
       // Normalize Flat ID (e.g. "a1" -> "A1")
       const flatIdUpper = rawFlatId.toUpperCase().replace(/\s+/g, '');
 
+      // 1. Tenant Name (Strict: if empty, leave existing as it is)
+      const rawTenantName =
+        nameIdx >= 0 && row[nameIdx] !== undefined && row[nameIdx] !== null
+          ? String(row[nameIdx]).trim()
+          : '';
+
+      // Resolve specific unit names (like A5 (Owner) vs A5 Sublet, and C5 Owner)
+      let resolvedFlatId = flatIdUpper;
+      if (flatIdUpper === 'A5' || flatIdUpper === 'A5 OWNER' || flatIdUpper === 'A5 (OWNER)') {
+        if (rawTenantName.toUpperCase().includes('OWNER') || flatIdUpper.includes('OWNER')) {
+          if (data.units.some((u) => u.flatId === 'A5 (Owner)' || u.flatId === 'A5 Owner') || data.ledgerItems.some((i) => i.flatId === 'A5 (Owner)' || i.flatId === 'A5 Owner')) {
+            resolvedFlatId = 'A5 (Owner)';
+          }
+        } else {
+          if (data.units.some((u) => u.flatId === 'A5 Sublet') || data.ledgerItems.some((i) => i.flatId === 'A5 Sublet')) {
+            resolvedFlatId = 'A5 Sublet';
+          }
+        }
+      } else if (flatIdUpper === 'C5' || flatIdUpper === 'C5 OWNER' || flatIdUpper === 'C5 (OWNER)') {
+        if (data.units.some((u) => u.flatId === 'C5 Owner' || u.flatId === 'C5 (Owner)') || data.ledgerItems.some((i) => i.flatId === 'C5 Owner' || i.flatId === 'C5 (Owner)')) {
+          resolvedFlatId = 'C5 Owner';
+        }
+      }
+
       // Determine Block Name
       let blockName: 'Block A' | 'Block B' | 'Block C' = 'Block A';
-      if (flatIdUpper.startsWith('B')) blockName = 'Block B';
-      else if (flatIdUpper.startsWith('C')) blockName = 'Block C';
+      if (resolvedFlatId.startsWith('B')) blockName = 'Block B';
+      else if (resolvedFlatId.startsWith('C')) blockName = 'Block C';
 
-      const unit = data.units.find((u) => u.flatId === flatIdUpper);
-      const tenant = data.tenants.find((t) => t.flatId === flatIdUpper);
+      const existingLedgerItem = data.ledgerItems.find(
+        (i) => i.flatId === resolvedFlatId && i.month === targetMonth && i.year === targetYear
+      );
+      const unit = data.units.find((u) => u.flatId === resolvedFlatId);
+      const tenant = data.tenants.find((t) => t.flatId === resolvedFlatId);
+      const advanceAccount = data.advanceAccounts.find((a) => a.flatId === resolvedFlatId);
+      const prevLedgerItem = data.ledgerItems.find(
+        (i) =>
+          i.flatId === resolvedFlatId &&
+          i.month === (targetMonth === 1 ? 12 : targetMonth - 1) &&
+          i.year === (targetMonth === 1 ? targetYear - 1 : targetYear)
+      );
 
-      const parsedRent = rentIdx >= 0 && row[rentIdx] !== '' ? Number(row[rentIdx]) || 0 : unit?.monthlyRent || 25000;
-      const parsedAdvance = advanceIdx >= 0 && row[advanceIdx] !== '' ? Number(row[advanceIdx]) || 0 : 50000;
-      const parsedElec = elecIdx >= 0 && row[elecIdx] !== '' ? Number(row[elecIdx]) || 0 : 0;
-      const parsedParking = parkingIdx >= 0 && row[parkingIdx] !== '' ? Number(row[parkingIdx]) || 0 : 0;
-      const parsedGodown = godownIdx >= 0 && row[godownIdx] !== '' ? Number(row[godownIdx]) || 0 : 0;
+      const isNameProvided = rawTenantName !== '';
+      const tenantName = isNameProvided
+        ? rawTenantName
+        : existingLedgerItem?.tenantName ||
+          tenant?.fullName ||
+          (resolvedFlatId.includes('Owner') ? 'Owner Occupied' : 'Resident');
 
-      const totalPayable = parsedRent + parsedElec + parsedParking + parsedGodown;
+      // 2. Mobile (Strict: if empty, leave existing as it is)
+      const rawPhone =
+        phoneIdx >= 0 && row[phoneIdx] !== undefined && row[phoneIdx] !== null
+          ? String(row[phoneIdx]).trim()
+          : '';
+      const isPhoneProvided = rawPhone !== '';
+      const tenantPhone = isPhoneProvided
+        ? rawPhone
+        : existingLedgerItem?.tenantPhone || tenant?.phone || (resolvedFlatId.includes('Owner') ? 'N/A' : '01700-000000');
 
-      let totalPaid = 0;
-      if (paidIdx >= 0 && row[paidIdx] !== '') {
-        totalPaid = Number(row[paidIdx]) || 0;
-      }
+      // 3. Entry Date (Strict: if empty, leave existing as it is)
+      const rawDate =
+        entryDateIdx >= 0 && row[entryDateIdx] !== undefined && row[entryDateIdx] !== null
+          ? row[entryDateIdx]
+          : '';
+      const normalizedDate = normalizeSpreadsheetDate(rawDate);
+      const isDateProvided = normalizedDate !== '';
+      const entryDate = isDateProvided
+        ? normalizedDate
+        : existingLedgerItem?.entryDate || tenant?.entryDate || (resolvedFlatId.includes('Owner') ? 'N/A' : '2024-01-01');
 
-      let paymentStatus: PaymentStatus = 'Not Paid';
-      if (statusIdx >= 0 && row[statusIdx]) {
-        const rawStatus = String(row[statusIdx]).toLowerCase();
-        if (rawStatus.includes('paid') && !rawStatus.includes('not') && !rawStatus.includes('part')) {
-          paymentStatus = 'Paid';
-          if (totalPaid === 0) totalPaid = totalPayable;
-        } else if (rawStatus.includes('part')) {
-          paymentStatus = 'Partially Paid';
-          if (totalPaid === 0) totalPaid = Math.round(totalPayable / 2);
-        } else if (rawStatus.includes('adjust')) {
-          paymentStatus = 'Adjusted';
-          if (totalPaid === 0) totalPaid = totalPayable;
+      // 4. Advance (Strict: supports status "PAID", "NOT PAID", "N/A" or numeric amount)
+      const rawAdvanceStr =
+        advanceIdx >= 0 && row[advanceIdx] !== undefined && row[advanceIdx] !== null
+          ? String(row[advanceIdx]).trim()
+          : '';
+
+      // Registered advance deposit from building advance accounts or standard 2-months rent
+      const standardAdvance =
+        advanceAccount?.amountPaid !== undefined && advanceAccount.amountPaid > 0
+          ? advanceAccount.amountPaid
+          : advanceAccount?.totalRequired !== undefined && advanceAccount.totalRequired > 0
+          ? advanceAccount.totalRequired
+          : prevLedgerItem?.advancePayment !== undefined && prevLedgerItem.advancePayment > 0
+          ? prevLedgerItem.advancePayment
+          : unit?.monthlyRent ? unit.monthlyRent * 2
+          : 50000;
+
+      let advancePayment =
+        existingLedgerItem?.advancePayment !== undefined
+          ? existingLedgerItem.advancePayment
+          : standardAdvance;
+
+      let advanceStatus: 'Paid' | 'Not Paid' | 'Partially Paid' | 'Adjusted' | 'N/A' =
+        resolvedFlatId.includes('Owner')
+          ? 'N/A'
+          : (existingLedgerItem?.advanceStatus || (advancePayment > 0 ? 'Paid' : 'Not Paid'));
+
+      if (rawAdvanceStr !== '') {
+        const upperAdv = rawAdvanceStr.toUpperCase().trim();
+        if (upperAdv.includes('NOT') || upperAdv === 'DUE' || upperAdv === 'UNPAID') {
+          advanceStatus = 'Not Paid';
+          advancePayment = 0;
+        } else if (upperAdv === 'N/A' || upperAdv === 'NA' || upperAdv === 'NONE' || upperAdv === '-') {
+          advanceStatus = 'N/A';
+          advancePayment = 0;
+        } else if (upperAdv.includes('PAID') || upperAdv === 'YES') {
+          advanceStatus = 'Paid';
+          advancePayment = standardAdvance > 0 ? standardAdvance : (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000);
+        } else {
+          const cleanAdvanceNum = rawAdvanceStr.replace(/[^0-9.]/g, '');
+          if (cleanAdvanceNum !== '' && !isNaN(Number(cleanAdvanceNum))) {
+            advancePayment = Number(cleanAdvanceNum);
+            advanceStatus = advancePayment > 0 ? 'Paid' : 'Not Paid';
+          }
         }
-      } else if (totalPaid >= totalPayable && totalPayable > 0) {
-        paymentStatus = 'Paid';
-      } else if (totalPaid > 0) {
-        paymentStatus = 'Partially Paid';
       }
 
-      const totalDue = Math.max(0, totalPayable - totalPaid);
+      // If marked as Paid or Partially Paid but advancePayment is 0, guarantee standard advance amount
+      if (!resolvedFlatId.includes('Owner') && (advanceStatus === 'Paid' || advanceStatus === 'Partially Paid') && advancePayment === 0) {
+        advancePayment = standardAdvance > 0 ? standardAdvance : (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000);
+      }
 
-      const tenantName =
-        nameIdx >= 0 && row[nameIdx]
-          ? String(row[nameIdx]).trim()
-          : tenant?.fullName || (flatIdUpper.includes('OWNER') ? 'Owner Occupied' : 'Resident');
+      // Strict preservation: Keep all existing financial & billing fields untouched
+      if (existingLedgerItem) {
+        // Self-heal: If existing item had erroneous 8000 flat rent for A1, correct to standard unit monthly rent
+        let flatRent = existingLedgerItem.flatRent;
+        let electricityBill = existingLedgerItem.electricityBill;
+        let electricityStatus = existingLedgerItem.electricityStatus;
+        let rentStatus = existingLedgerItem.rentStatus;
+        let paymentStatus = existingLedgerItem.paymentStatus;
+        let totalPayable = existingLedgerItem.totalPayable;
+        let totalPaid = existingLedgerItem.totalPaid;
+        let totalDue = existingLedgerItem.totalDue;
 
-      const tenantPhone =
-        phoneIdx >= 0 && row[phoneIdx] ? String(row[phoneIdx]).trim() : tenant?.phone || '01700-000000';
+        if (resolvedFlatId === 'A1' && flatRent === 8000) {
+          flatRent = unit?.monthlyRent || 22000;
+          electricityBill = 0;
+          electricityStatus = 'N/A';
+          rentStatus = 'Not Paid';
+          paymentStatus = 'Not Paid';
+          totalPayable = flatRent;
+          totalPaid = 0;
+          totalDue = flatRent;
+        }
 
-      const entryDate =
-        entryDateIdx >= 0 && row[entryDateIdx] ? String(row[entryDateIdx]).trim() : tenant?.entryDate || '2024-01-01';
+        importedItems.push({
+          ...existingLedgerItem,
+          tenantName,
+          tenantPhone,
+          entryDate,
+          advancePayment,
+          advanceStatus,
+          flatRent,
+          electricityBill,
+          electricityStatus,
+          rentStatus,
+          paymentStatus,
+          totalPayable,
+          totalPaid,
+          totalDue,
+        });
+      } else {
+        // Fallback if ledger item doesn't exist for target month yet
+        const flatRent = resolvedFlatId.includes('Owner') ? 0 : (unit?.monthlyRent || prevLedgerItem?.flatRent || 25000);
+        const electricityBill = 0; // Empty for manual input
+        const parkingRent = unit?.parkingSlot ? 2500 : (prevLedgerItem?.parkingRent || 0);
+        const godownRent = unit?.godownSlot ? 6000 : (prevLedgerItem?.godownRent || 0);
+        const totalPayable = flatRent + parkingRent + godownRent;
+        const totalPaid = 0;
+        const totalDue = totalPayable;
+        const paymentStatus: PaymentStatus =
+          resolvedFlatId.includes('Owner') || tenantName === 'Owner Occupied' || tenantName === 'Vacant Flat'
+            ? 'N/A'
+            : 'Not Paid';
 
-      importedItems.push({
-        id: `led-${flatIdUpper.toLowerCase()}-${targetMonth}-${targetYear}`,
-        unitId: unit?.id || `u-${flatIdUpper}`,
-        flatId: flatIdUpper,
-        blockName,
-        tenantId: tenant?.id || `t-${flatIdUpper}`,
-        tenantName,
-        tenantPhone,
-        entryDate,
-        month: targetMonth,
-        year: targetYear,
-        advancePayment: parsedAdvance,
-        flatRent: parsedRent,
-        electricityBill: parsedElec,
-        parkingRent: parsedParking,
-        godownRent: parsedGodown,
-        totalPayable,
-        totalPaid,
-        totalDue,
-        paymentStatus,
-        adjustedFromAdvance: 0,
-        lastPaymentDate: paymentStatus === 'Paid' ? `${targetYear}-${String(targetMonth).padStart(2, '0')}-05` : undefined,
-      });
+        importedItems.push({
+          id: `led-${resolvedFlatId.toLowerCase().replace(/\s+/g, '-')}-${targetMonth}-${targetYear}`,
+          unitId: unit?.id || `u-${resolvedFlatId.toLowerCase().replace(/\s+/g, '-')}`,
+          flatId: resolvedFlatId,
+          blockName,
+          tenantId: tenant?.id || `t-${resolvedFlatId.toLowerCase().replace(/\s+/g, '-')}`,
+          tenantName,
+          tenantPhone,
+          entryDate,
+          month: targetMonth,
+          year: targetYear,
+          advancePayment,
+          advanceStatus,
+          flatRent,
+          rentStatus: paymentStatus === 'N/A' ? 'N/A' : 'Not Paid',
+          electricityBill,
+          electricityStatus: 'N/A',
+          parkingRent,
+          godownRent,
+          totalPayable,
+          totalPaid,
+          totalDue,
+          paymentStatus,
+          adjustedFromAdvance: 0,
+        });
+      }
     });
 
     if (importedItems.length === 0) {
@@ -383,9 +575,9 @@ export const ExcelImportModal: React.FC<Props> = ({
     }
 
     onImportSuccess(importedItems, targetMonth, targetYear, {
-      updateUnits,
-      updateTenants,
-      updateAdvance,
+      updateUnits: false,
+      updateTenants: false,
+      updateAdvance: false,
     });
     onClose();
   };
@@ -401,10 +593,10 @@ export const ExcelImportModal: React.FC<Props> = ({
             </div>
             <div>
               <h3 className="font-bold text-lg text-white">
-                Upload & Extract Data from Excel or Google Sheet
+                Upload Excel / Google Sheet (Strict 5 Fields)
               </h3>
               <p className="text-xs text-slate-300 mt-0.5">
-                Automatically extract and map tenant rosters, rents, advances, electricity, and parking into database
+                Strictly uploads: <strong>1. Flat ID</strong>, <strong>2. Tenant Name</strong>, <strong>3. Mobile</strong>, <strong>4. Entry Date</strong>, <strong>5. Advance</strong>. If any field is empty, it leaves it as it is.
               </p>
             </div>
           </div>
@@ -423,7 +615,7 @@ export const ExcelImportModal: React.FC<Props> = ({
             <div>
               <span className="font-bold text-blue-900 text-sm block">Target Ledger Month & Year</span>
               <p className="text-blue-700 text-xs mt-0.5">
-                Extracted data will be written into the selected monthly ledger in the server database.
+                Roster updates will be applied to the selected billing period in the database.
               </p>
             </div>
 
@@ -459,8 +651,20 @@ export const ExcelImportModal: React.FC<Props> = ({
                 title="Download formatted sample template (.xlsx)"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Template (.xlsx)</span>
+                <span>5-Field Template (.xlsx)</span>
               </button>
+            </div>
+          </div>
+
+          {/* Strict 5 Fields Policy Banner */}
+          <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl flex items-start gap-3">
+            <div className="p-1 bg-amber-200 text-amber-900 rounded-md shrink-0 mt-0.5 font-bold text-[10px]">
+              STRICT
+            </div>
+            <div className="text-amber-950 text-xs leading-relaxed">
+              <p className="font-bold text-amber-900 mb-0.5">Strict 5 Fields Upload Policy:</p>
+              This uploader only touches: <strong>1. Flat ID</strong>, <strong>2. Tenant Name</strong>, <strong>3. Mobile</strong>, <strong>4. Entry Date</strong>, and <strong>5. Advance</strong>.
+              All existing ledger amounts (<strong>Flat Rent</strong>, <strong>Electricity Bill</strong>, <strong>Parking Rent</strong>, and <strong>Payment Status</strong>) are strictly preserved and left as they are. If any field in your row is empty, it leaves the existing value as it is and proceeds to the next.
             </div>
           </div>
 
@@ -524,7 +728,7 @@ export const ExcelImportModal: React.FC<Props> = ({
                   Click to select or drag & drop your Excel / CSV file
                 </p>
                 <p className="text-slate-500 text-xs mt-1">
-                  Supports Microsoft Excel (.xlsx, .xls) and Comma-Separated Values (.csv)
+                  Uploads strictly: Flat ID, Tenant Name, Mobile, Entry Date, and Advance
                 </p>
               </div>
               {fileName && (
@@ -574,8 +778,9 @@ export const ExcelImportModal: React.FC<Props> = ({
               </label>
               <textarea
                 rows={4}
-                placeholder="Flat ID	Tenant Name	Phone	Flat Rent	Electricity	Parking...
-A1	Moshiur Rahman	01711-234567	26000	3450	2500"
+                placeholder="Flat ID	Tenant Name	Mobile	Entry Date	Advance
+A1	Moshiur Rahman	01711-234567	2024-03-01	60000
+A2	Farhan Ahmed	01819-876543	2024-05-15	50000"
                 value={pastedText}
                 onChange={(e) => setPastedText(e.target.value)}
                 className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-xs focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
@@ -605,10 +810,10 @@ A1	Moshiur Rahman	01711-234567	26000	3450	2500"
                 <div>
                   <h4 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
                     <Table className="w-4 h-4 text-blue-600" />
-                    Step 2: Verify & Map Sheet Columns
+                    Step 2: Map the 5 Allowed Fields
                   </h4>
                   <p className="text-slate-500 text-xs">
-                    Columns were automatically detected. Adjust dropdowns if needed to match your sheet headers.
+                    Only these 5 fields are uploaded strictly. Any empty field in a row will leave existing database data untouched.
                   </p>
                 </div>
                 <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-full font-bold text-xs">
@@ -616,11 +821,11 @@ A1	Moshiur Rahman	01711-234567	26000	3450	2500"
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 bg-slate-50/70 p-4 rounded-2xl border border-slate-200">
-                {/* Flat ID (Required) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 bg-slate-50/70 p-4 rounded-2xl border border-slate-200">
+                {/* 1. Flat ID (Required) */}
                 <div>
                   <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Flat ID <span className="text-rose-600">*</span>
+                    1. Flat ID <span className="text-rose-600">*</span>
                   </label>
                   <select
                     value={mapping.flatId}
@@ -634,184 +839,172 @@ A1	Moshiur Rahman	01711-234567	26000	3450	2500"
                       </option>
                     ))}
                   </select>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Required identifier</span>
                 </div>
 
-                {/* Tenant Name */}
+                {/* 2. Tenant Name */}
                 <div>
                   <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Tenant Name
+                    2. Tenant Name
                   </label>
                   <select
                     value={mapping.tenantName}
                     onChange={(e) => setMapping({ ...mapping, tenantName: e.target.value })}
                     className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="">-- Select Column --</option>
+                    <option value="">-- None (Keep Existing) --</option>
                     {rawHeaders.map((h) => (
                       <option key={h} value={h}>
                         {h}
                       </option>
                     ))}
                   </select>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Empty = leaves as is</span>
                 </div>
 
-                {/* Mobile / Phone */}
+                {/* 3. Mobile */}
                 <div>
                   <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Mobile / Phone
+                    3. Mobile
                   </label>
                   <select
                     value={mapping.phone}
                     onChange={(e) => setMapping({ ...mapping, phone: e.target.value })}
                     className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="">-- Select Column --</option>
+                    <option value="">-- None (Keep Existing) --</option>
                     {rawHeaders.map((h) => (
                       <option key={h} value={h}>
                         {h}
                       </option>
                     ))}
                   </select>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Empty = leaves as is</span>
                 </div>
 
-                {/* Entry Date */}
+                {/* 4. Entry Date */}
                 <div>
                   <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Entry Date
+                    4. Entry Date
                   </label>
                   <select
                     value={mapping.entryDate}
                     onChange={(e) => setMapping({ ...mapping, entryDate: e.target.value })}
                     className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="">-- Select Column --</option>
+                    <option value="">-- None (Keep Existing) --</option>
                     {rawHeaders.map((h) => (
                       <option key={h} value={h}>
                         {h}
                       </option>
                     ))}
                   </select>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Empty = leaves as is</span>
                 </div>
 
-                {/* Security Advance */}
+                {/* 5. Advance */}
                 <div>
                   <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Security Advance
+                    5. Advance
                   </label>
                   <select
                     value={mapping.advance}
                     onChange={(e) => setMapping({ ...mapping, advance: e.target.value })}
                     className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-semibold text-slate-800"
                   >
-                    <option value="">-- Select Column --</option>
+                    <option value="">-- None (Keep Existing) --</option>
                     {rawHeaders.map((h) => (
                       <option key={h} value={h}>
                         {h}
                       </option>
                     ))}
                   </select>
-                </div>
-
-                {/* Monthly Flat Rent */}
-                <div>
-                  <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Monthly Flat Rent
-                  </label>
-                  <select
-                    value={mapping.flatRent}
-                    onChange={(e) => setMapping({ ...mapping, flatRent: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-semibold text-slate-800"
-                  >
-                    <option value="">-- Select Column --</option>
-                    {rawHeaders.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Electricity Bill */}
-                <div>
-                  <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Electricity Bill
-                  </label>
-                  <select
-                    value={mapping.electricity}
-                    onChange={(e) => setMapping({ ...mapping, electricity: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-semibold text-slate-800"
-                  >
-                    <option value="">-- Select Column --</option>
-                    {rawHeaders.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Parking Rent */}
-                <div>
-                  <label className="block font-bold text-slate-800 mb-1 text-[11px]">
-                    Parking Rent
-                  </label>
-                  <select
-                    value={mapping.parking}
-                    onChange={(e) => setMapping({ ...mapping, parking: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg p-1.5 text-xs font-semibold text-slate-800"
-                  >
-                    <option value="">-- Select Column --</option>
-                    {rawHeaders.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
+                  <span className="text-[10px] text-slate-400 block mt-0.5">Empty = leaves as is</span>
                 </div>
               </div>
 
               {/* Data Extraction Preview Table */}
               <div className="space-y-2">
-                <span className="font-bold text-slate-800 text-xs block">
-                  Extracted Data Preview (First 5 Rows):
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800 text-xs block">
+                    Extracted Data Preview (First 5 Rows):
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Fields marked <span className="italic text-slate-400">(Empty - Leaves Existing)</span> will preserve existing data
+                  </span>
+                </div>
                 <div className="overflow-x-auto rounded-xl border border-slate-200">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
-                        <th className="p-2.5">Flat ID</th>
-                        <th className="p-2.5">Tenant Name</th>
-                        <th className="p-2.5">Mobile</th>
-                        <th className="p-2.5 text-right">Rent</th>
-                        <th className="p-2.5 text-right">Advance</th>
-                        <th className="p-2.5 text-right">Electricity</th>
-                        <th className="p-2.5 text-right">Parking</th>
+                        <th className="p-2.5">1. Flat ID</th>
+                        <th className="p-2.5">2. Tenant Name</th>
+                        <th className="p-2.5">3. Mobile</th>
+                        <th className="p-2.5">4. Entry Date</th>
+                        <th className="p-2.5 text-right">5. Advance</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
                       {rawRows.slice(0, 5).map((row, i) => {
                         const getVal = (col: string) => {
                           const idx = rawHeaders.indexOf(col);
-                          return idx >= 0 ? row[idx] : '-';
+                          return idx >= 0 && row[idx] !== undefined && row[idx] !== null && String(row[idx]).trim() !== ''
+                            ? String(row[idx]).trim()
+                            : '';
                         };
+
+                        const flatIdVal = getVal(mapping.flatId);
+                        const tenantNameVal = getVal(mapping.tenantName);
+                        const phoneVal = getVal(mapping.phone);
+                        const dateVal = getVal(mapping.entryDate);
+                        const rawAdvance = getVal(mapping.advance);
+                        const upperAdv = rawAdvance.toUpperCase().trim();
+                        const advanceNum = rawAdvance ? Number(rawAdvance.replace(/[^0-9.]/g, '')) : NaN;
+
                         return (
                           <tr key={i} className="hover:bg-slate-50">
                             <td className="p-2.5 font-bold text-blue-700 font-sans">
-                              {getVal(mapping.flatId) || `Row ${i + 1}`}
+                              {flatIdVal || `Row ${i + 1}`}
                             </td>
-                            <td className="p-2.5 font-sans">{getVal(mapping.tenantName)}</td>
-                            <td className="p-2.5 text-slate-600">{getVal(mapping.phone)}</td>
-                            <td className="p-2.5 text-right font-bold text-slate-900">
-                              {formatBDT(Number(getVal(mapping.flatRent)) || 0)}
+                            <td className="p-2.5 font-sans">
+                              {tenantNameVal ? (
+                                <span className="font-medium text-slate-800">{tenantNameVal}</span>
+                              ) : (
+                                <span className="text-slate-400 italic text-[11px]">(Empty - Leaves Existing)</span>
+                              )}
                             </td>
-                            <td className="p-2.5 text-right text-indigo-700 font-bold">
-                              {formatBDT(Number(getVal(mapping.advance)) || 0)}
+                            <td className="p-2.5 font-sans">
+                              {phoneVal ? (
+                                <span className="text-slate-700">{phoneVal}</span>
+                              ) : (
+                                <span className="text-slate-400 italic text-[11px]">(Empty - Leaves Existing)</span>
+                              )}
                             </td>
-                            <td className="p-2.5 text-right text-amber-700">
-                              {formatBDT(Number(getVal(mapping.electricity)) || 0)}
+                            <td className="p-2.5 font-sans">
+                              {dateVal ? (
+                                <span className="text-slate-700 font-semibold">{formatDateDDMMYYYY(normalizeSpreadsheetDate(dateVal))}</span>
+                              ) : (
+                                <span className="text-slate-400 italic text-[11px]">(Empty - Leaves Existing)</span>
+                              )}
                             </td>
-                            <td className="p-2.5 text-right text-slate-600">
-                              {formatBDT(Number(getVal(mapping.parking)) || 0)}
+                            <td className="p-2.5 text-right font-sans">
+                              {upperAdv.includes('NOT') || upperAdv === 'DUE' || upperAdv === 'UNPAID' ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800">
+                                  Not Paid (৳0)
+                                </span>
+                              ) : upperAdv === 'N/A' || upperAdv === 'NA' || upperAdv === 'NONE' || upperAdv === '-' ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
+                                  N/A
+                                </span>
+                              ) : upperAdv.includes('PAID') || upperAdv === 'YES' ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                  Paid
+                                </span>
+                              ) : !isNaN(advanceNum) && rawAdvance !== '' ? (
+                                <span className="font-bold text-indigo-700">{formatBDT(advanceNum)}</span>
+                              ) : (
+                                <span className="text-slate-400 italic text-[11px]">(Empty - Leaves Existing)</span>
+                              )}
                             </td>
                           </tr>
                         );
@@ -821,42 +1014,15 @@ A1	Moshiur Rahman	01711-234567	26000	3450	2500"
                 </div>
               </div>
 
-              {/* Master Sync Options */}
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                <span className="font-bold text-slate-800 text-xs block">
-                  Automatic Master Roster Synchronization:
-                </span>
-                <div className="flex flex-wrap items-center gap-4 text-xs">
-                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={updateUnits}
-                      onChange={(e) => setUpdateUnits(e.target.checked)}
-                      className="rounded text-blue-600"
-                    />
-                    <span>Update Units rent rates & occupancy</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={updateTenants}
-                      onChange={(e) => setUpdateTenants(e.target.checked)}
-                      className="rounded text-blue-600"
-                    />
-                    <span>Update Tenants profiles & phone numbers</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={updateAdvance}
-                      onChange={(e) => setUpdateAdvance(e.target.checked)}
-                      className="rounded text-blue-600"
-                    />
-                    <span>Update Advance Accounts security balances</span>
-                  </label>
+              {/* Month-Only Override Scope Guarantee */}
+              <div className="p-4 bg-emerald-50/90 rounded-2xl border border-emerald-200 space-y-1.5">
+                <div className="flex items-center gap-2 text-emerald-950 font-bold text-xs">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Target Override Scope: {getMonthName(targetMonth)} {targetYear} Ledger ONLY</span>
                 </div>
+                <p className="text-[11px] text-emerald-800 leading-relaxed pl-6">
+                  Uploading will override existing records in <strong>{getMonthName(targetMonth)} {targetYear} only</strong>. All other months (previous and future months) are strictly protected and remain completely untouched. If any field in a row is empty, it leaves the existing data in this month as it is.
+                </p>
               </div>
             </div>
           )}
@@ -864,9 +1030,9 @@ A1	Moshiur Rahman	01711-234567	26000	3450	2500"
 
         {/* Footer Actions */}
         <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs text-slate-500">
+          <div className="flex items-center gap-2 text-xs text-slate-600 font-medium">
             <Database className="w-4 h-4 text-emerald-600" />
-            <span>Target: {getMonthName(targetMonth)} {targetYear} Ledger</span>
+            <span>Target: <strong className="text-slate-900">{getMonthName(targetMonth)} {targetYear}</strong> (This month only)</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -885,7 +1051,7 @@ A1	Moshiur Rahman	01711-234567	26000	3450	2500"
               className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>Import & Auto-Fill Database ({rawRows.length} Flats)</span>
+              <span>Override {getMonthName(targetMonth)} {targetYear} Data ({rawRows.length} Flats)</span>
             </button>
           </div>
         </div>

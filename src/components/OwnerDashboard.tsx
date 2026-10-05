@@ -26,7 +26,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import { AppDatabaseState, UserProfile, PrintableReceipt, MonthlyLedgerItem, PaymentSettings } from '../types';
-import { formatBDT, formatDateDDMMYYYY, getMonthName, MONTH_NAMES } from '../lib/nescoTariff';
+import { formatBDT, formatDateDDMMYYYY, getMonthName, MONTH_NAMES, getPostpaidElectricityPeriod } from '../lib/nescoTariff';
 import { COMPLEX_CONFIG } from '../lib/complexConfig';
 import { formatBillingPeriod } from '../lib/api';
 import { INITIAL_BLOCK_MFS_CONFIGS } from '../lib/storage';
@@ -209,8 +209,9 @@ export const OwnerDashboard: React.FC<Props> = ({
   };
 
   const handleGenerateElectricityReceipt = (item: MonthlyLedgerItem) => {
+    const elecPeriod = getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear);
     onViewReceipt({
-      receiptNumber: `REC-ELEC-${item.flatId}-${data.selectedMonth}-${data.selectedYear}`,
+      receiptNumber: `REC-ELEC-${item.flatId}-${elecPeriod.month}-${elecPeriod.year}`,
       type: 'electricity',
       tenantName: item.tenantName,
       tenantPhone: item.tenantPhone,
@@ -219,10 +220,12 @@ export const OwnerDashboard: React.FC<Props> = ({
       amount: item.electricityBill,
       paymentDate: item.electricityDate || item.lastPaymentDate || '2026-10-01',
       paymentMethod: 'Cash',
-      purpose: `NESCO Sub-Meter Electricity Bill for ${getMonthName(data.selectedMonth)} ${data.selectedYear} - Flat ${item.flatId}`,
+      monthName: elecPeriod.monthName,
+      year: elecPeriod.year,
+      purpose: `NESCO Sub-Meter Electricity Bill for ${elecPeriod.displayStr} (Postpaid Billing for ${getMonthName(data.selectedMonth)} ${data.selectedYear} Rent) - Flat ${item.flatId}`,
       ...ownerSignatureMeta,
       breakdown: [
-        { label: `Electricity Consumption (${getMonthName(data.selectedMonth)} ${data.selectedYear})`, amount: item.electricityBill },
+        { label: `Postpaid Electricity Consumption (${elecPeriod.displayStr})`, amount: item.electricityBill },
       ],
     });
   };
@@ -813,20 +816,56 @@ export const OwnerDashboard: React.FC<Props> = ({
                 <th className="py-3 px-4 whitespace-nowrap">4. Entry Date</th>
                 <th className="py-3 px-4 text-right whitespace-nowrap">5. Advance</th>
                 <th className="py-3 px-4 text-right whitespace-nowrap">6. Flat Rent</th>
-                <th className="py-3 px-4 text-right whitespace-nowrap">7. Electricity</th>
-                <th className="py-3 px-4 text-right whitespace-nowrap">8. Parking</th>
+                <th
+                  className="py-3 px-4 text-right whitespace-nowrap"
+                  title={`Postpaid Electricity for ${getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear).displayStr} (Flat Rent Month: ${getMonthName(data.selectedMonth)} ${data.selectedYear})`}
+                >
+                  7. Electricity
+                  <span className="block text-[10px] font-normal text-slate-300">
+                    ({getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear).monthName.slice(0, 3)} Postpaid)
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-mono">
               {filteredLedger.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-500 font-sans">
+                  <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
                     No ledger records match the selected criteria.
                   </td>
                 </tr>
               ) : (
                 filteredLedger.map((row) => {
-                  const advStatus = row.advanceStatus || (row.advancePayment > 0 ? 'Paid' : 'Not Paid');
+                  const isOwnerFlat = row.flatId.toLowerCase().includes('owner');
+                  const rawAdvStatus = (row.advanceStatus || '').trim();
+                  const matchingAdv = data.advanceAccounts.find((a) => a.flatId === row.flatId);
+                  const isMarkedPaid = rawAdvStatus.toLowerCase() === 'paid';
+                  const isMarkedPartial = rawAdvStatus.toLowerCase() === 'partially paid' || rawAdvStatus.toLowerCase() === 'partially_paid';
+
+                  const effectiveAdvAmount =
+                    Number(row.advancePayment || 0) > 0
+                      ? Number(row.advancePayment || 0)
+                      : (matchingAdv?.amountPaid && matchingAdv.amountPaid > 0)
+                      ? matchingAdv.amountPaid
+                      : (matchingAdv?.totalRequired && matchingAdv.totalRequired > 0)
+                      ? matchingAdv.totalRequired
+                      : (isMarkedPaid ? 48000 : 0);
+
+                  const hasAdvAmount = effectiveAdvAmount > 0;
+                  const advStatus =
+                    isOwnerFlat
+                      ? 'N/A'
+                      : isMarkedPaid || (hasAdvAmount && rawAdvStatus !== 'N/A' && rawAdvStatus !== 'Not Paid' && rawAdvStatus !== 'not_paid')
+                      ? 'Paid'
+                      : isMarkedPartial
+                      ? 'Partially Paid'
+                      : rawAdvStatus.toLowerCase() === 'adjusted'
+                      ? 'Adjusted'
+                      : rawAdvStatus.toLowerCase() === 'n/a'
+                      ? 'N/A'
+                      : hasAdvAmount
+                      ? 'Paid'
+                      : 'Not Paid';
                   const rentStatus =
                     row.rentStatus ||
                     (row.paymentStatus === 'Paid' || row.paymentStatus === 'Adjusted'
@@ -875,7 +914,7 @@ export const OwnerDashboard: React.FC<Props> = ({
                       {/* 5. Advance Payment Status & Receipt */}
                       <td className="py-3 px-4 text-right font-sans whitespace-nowrap">
                         <span className="font-mono font-bold text-indigo-700 block">
-                          {formatBDT(row.advancePayment)}
+                          {formatBDT(effectiveAdvAmount)}
                         </span>
                         <span
                           className={`inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -890,10 +929,10 @@ export const OwnerDashboard: React.FC<Props> = ({
                         >
                           {advStatus}
                         </span>
-                        {advStatus === 'Paid' && row.advancePayment > 0 && (
+                        {(hasAdvAmount || advStatus === 'Paid' || advStatus === 'Partially Paid') && advStatus !== 'N/A' && !isOwnerFlat && (
                           <div className="mt-1">
                             <button
-                              onClick={() => handleGenerateAdvanceReceipt(row)}
+                              onClick={() => handleGenerateAdvanceReceipt({ ...row, advancePayment: effectiveAdvAmount })}
                               className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-[10px] font-bold transition-colors cursor-pointer"
                               title="Generate Official Advance Payment Receipt (Owner Signed)"
                             >
@@ -973,6 +1012,11 @@ export const OwnerDashboard: React.FC<Props> = ({
                               >
                                 {elecStatus}
                               </span>
+                              {row.electricityBill > 0 && (
+                                <span className="text-[9px] text-slate-500 font-medium block mt-0.5">
+                                  {getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear).monthName.slice(0, 3)} Bill
+                                </span>
+                              )}
                               {elecStatus === 'Paid' && row.electricityBill > 0 && (
                                 <div className="mt-1">
                                   <button
@@ -988,11 +1032,6 @@ export const OwnerDashboard: React.FC<Props> = ({
                             </>
                           );
                         })()}
-                      </td>
-
-                      {/* 8. Parking Rent */}
-                      <td className="py-3 px-4 text-right text-slate-600 font-mono whitespace-nowrap">
-                        {row.parkingRent > 0 ? formatBDT(row.parkingRent) : '-'}
                       </td>
                     </tr>
                   );
@@ -1013,9 +1052,6 @@ export const OwnerDashboard: React.FC<Props> = ({
                 </td>
                 <td className="py-3 px-4 text-right text-slate-900 whitespace-nowrap">
                   {formatBDT(filteredLedger.reduce((acc, curr) => acc + curr.electricityBill, 0))}
-                </td>
-                <td className="py-3 px-4 text-right text-slate-600 whitespace-nowrap">
-                  {formatBDT(filteredLedger.reduce((acc, curr) => acc + curr.parkingRent, 0))}
                 </td>
               </tr>
             </tfoot>
@@ -1111,7 +1147,6 @@ export const OwnerDashboard: React.FC<Props> = ({
                 </p>
                 <ul className="list-disc list-inside space-y-0.5 pl-1 text-slate-700">
                   <li><strong>7. Electricity Bill:</strong> Set to ৳0 / Empty (ready for your sub-meter manual input)</li>
-                  <li><strong>8. Parking Rent:</strong> Set to ৳0 / Empty (ready for your manual input)</li>
                   <li><strong>Payment Status:</strong> Initialized to &quot;Not Paid&quot; (৳0 paid) for the new month</li>
                 </ul>
               </div>

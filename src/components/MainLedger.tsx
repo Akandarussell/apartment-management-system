@@ -32,7 +32,7 @@ import {
   PrintableReceipt,
   UserProfile,
 } from '../types';
-import { formatBDT, formatDateDDMMYYYY, getMonthName, MONTH_NAMES } from '../lib/nescoTariff';
+import { formatBDT, formatDateDDMMYYYY, getMonthName, MONTH_NAMES, getPostpaidElectricityPeriod } from '../lib/nescoTariff';
 import { COMPLEX_CONFIG } from '../lib/complexConfig';
 import { formatBillingPeriod, upsertBatchRemoteMonthlyRentRecords } from '../lib/api';
 import { getSupabaseCredentials } from '../lib/supabase';
@@ -191,8 +191,9 @@ export const MainLedger: React.FC<Props> = ({
 
   const handleGenerateElectricityReceipt = (item: MonthlyLedgerItem) => {
     const sig = getSignatureMeta();
+    const elecPeriod = getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear);
     onViewReceipt({
-      receiptNumber: `REC-ELEC-${item.flatId}-${data.selectedMonth}-${data.selectedYear}`,
+      receiptNumber: `REC-ELEC-${item.flatId}-${elecPeriod.month}-${elecPeriod.year}`,
       type: 'electricity',
       tenantName: item.tenantName,
       tenantPhone: item.tenantPhone,
@@ -201,10 +202,12 @@ export const MainLedger: React.FC<Props> = ({
       amount: item.electricityBill,
       paymentDate: item.electricityDate || item.lastPaymentDate || '2026-10-01',
       paymentMethod: 'Cash',
-      purpose: `NESCO Sub-Meter Electricity Bill for ${getMonthName(data.selectedMonth)} ${data.selectedYear} - Flat ${item.flatId}`,
+      monthName: elecPeriod.monthName,
+      year: elecPeriod.year,
+      purpose: `NESCO Sub-Meter Electricity Bill for ${elecPeriod.displayStr} (Postpaid Billing for ${getMonthName(data.selectedMonth)} ${data.selectedYear} Rent) - Flat ${item.flatId}`,
       ...sig,
       breakdown: [
-        { label: `Electricity Consumption (${getMonthName(data.selectedMonth)} ${data.selectedYear})`, amount: item.electricityBill },
+        { label: `Postpaid Electricity Consumption (${elecPeriod.displayStr})`, amount: item.electricityBill },
       ],
     });
   };
@@ -412,7 +415,7 @@ export const MainLedger: React.FC<Props> = ({
     setAdjustModalItem(null);
   };
 
-  // Export to CSV (Aligned with 8 ledger columns)
+  // Export to CSV (Aligned with 7 ledger columns)
   const handleExportCSV = () => {
     const headers = [
       'Flat ID',
@@ -422,7 +425,6 @@ export const MainLedger: React.FC<Props> = ({
       'Advance Payment',
       'Flat Rent',
       'Electricity Bill',
-      'Parking Rent',
     ];
     const rows = filteredItems.map((item) => [
       `"${item.flatId}"`,
@@ -432,7 +434,6 @@ export const MainLedger: React.FC<Props> = ({
       item.advancePayment,
       item.flatRent,
       item.electricityBill,
-      item.parkingRent,
     ]);
 
     const csv = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
@@ -455,7 +456,7 @@ export const MainLedger: React.FC<Props> = ({
       <thead>
         <tr style="background:#0f172a; color:#ffffff;">
           <th>Flat ID</th><th>Tenant Name</th><th>Mobile</th><th>Entry Date</th>
-          <th>Advance</th><th>Flat Rent</th><th>Electricity</th><th>Parking</th>
+          <th>Advance</th><th>Flat Rent</th><th>Electricity</th>
         </tr>
       </thead>
       <tbody>`;
@@ -463,7 +464,7 @@ export const MainLedger: React.FC<Props> = ({
     filteredItems.forEach((row) => {
       tableHtml += `<tr>
         <td>${row.flatId}</td><td>${row.tenantName}</td><td>${row.tenantPhone}</td><td>${row.entryDate}</td>
-        <td>${row.advancePayment}</td><td>${row.flatRent}</td><td>${row.electricityBill}</td><td>${row.parkingRent}</td>
+        <td>${row.advancePayment}</td><td>${row.flatRent}</td><td>${row.electricityBill}</td>
       </tr>`;
     });
 
@@ -883,7 +884,6 @@ export const MainLedger: React.FC<Props> = ({
                 className="bg-white border border-slate-300 text-xs font-semibold rounded-xl px-3 py-2 text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
               >
                 <option value="all">All Units</option>
-                <option value="parking">With Parking Rent</option>
                 <option value="godown">With Godown Rent</option>
               </select>
             </div>
@@ -1003,14 +1003,21 @@ export const MainLedger: React.FC<Props> = ({
                 <th className="py-3.5 px-3 whitespace-nowrap">4. Entry Date</th>
                 <th className="py-3.5 px-3 text-right whitespace-nowrap">5. Advance</th>
                 <th className="py-3.5 px-3 text-right whitespace-nowrap">6. Flat Rent</th>
-                <th className="py-3.5 px-3 text-right whitespace-nowrap">7. Electricity</th>
-                <th className="py-3.5 px-3 text-right whitespace-nowrap">8. Parking</th>
+                <th
+                  className="py-3.5 px-3 text-right whitespace-nowrap"
+                  title={`Postpaid Electricity for ${getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear).displayStr} (Flat Rent Month: ${getMonthName(data.selectedMonth)} ${data.selectedYear})`}
+                >
+                  7. Electricity
+                  <span className="block text-[10px] font-normal text-slate-300">
+                    ({getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear).monthName.slice(0, 3)} Postpaid)
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-mono">
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-500 font-sans text-sm">
+                  <td colSpan={7} className="py-12 text-center text-slate-500 font-sans text-sm">
                     {activeMonthLedger.length === 0 ? (
                       <div className="max-w-md mx-auto space-y-3">
                         <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mx-auto border border-amber-200">
@@ -1050,7 +1057,36 @@ export const MainLedger: React.FC<Props> = ({
                 </tr>
               ) : (
                 filteredItems.map((item) => {
-                  const advStatus = item.advanceStatus || (item.advancePayment > 0 ? 'Paid' : 'Not Paid');
+                  const isOwnerFlat = item.flatId.toLowerCase().includes('owner');
+                  const rawAdvStatus = (item.advanceStatus || '').trim();
+                  const matchingAdv = data.advanceAccounts.find((a) => a.flatId === item.flatId);
+                  const isMarkedPaid = rawAdvStatus.toLowerCase() === 'paid';
+                  const isMarkedPartial = rawAdvStatus.toLowerCase() === 'partially paid' || rawAdvStatus.toLowerCase() === 'partially_paid';
+
+                  const effectiveAdvAmount =
+                    Number(item.advancePayment || 0) > 0
+                      ? Number(item.advancePayment || 0)
+                      : (matchingAdv?.amountPaid && matchingAdv.amountPaid > 0)
+                      ? matchingAdv.amountPaid
+                      : (matchingAdv?.totalRequired && matchingAdv.totalRequired > 0)
+                      ? matchingAdv.totalRequired
+                      : (isMarkedPaid ? 48000 : 0);
+
+                  const hasAdvAmount = effectiveAdvAmount > 0;
+                  const advStatus =
+                    isOwnerFlat
+                      ? 'N/A'
+                      : isMarkedPaid || (hasAdvAmount && rawAdvStatus !== 'N/A' && rawAdvStatus !== 'Not Paid' && rawAdvStatus !== 'not_paid')
+                      ? 'Paid'
+                      : isMarkedPartial
+                      ? 'Partially Paid'
+                      : rawAdvStatus.toLowerCase() === 'adjusted'
+                      ? 'Adjusted'
+                      : rawAdvStatus.toLowerCase() === 'n/a'
+                      ? 'N/A'
+                      : hasAdvAmount
+                      ? 'Paid'
+                      : 'Not Paid';
                   const rentStatus =
                     item.rentStatus ||
                     (item.paymentStatus === 'Paid' || item.paymentStatus === 'Adjusted'
@@ -1106,7 +1142,7 @@ export const MainLedger: React.FC<Props> = ({
                       {/* 5. Advance Payment Status & Receipt */}
                       <td className="py-3 px-3 text-right font-sans whitespace-nowrap">
                         <span className="font-mono font-bold text-indigo-700 block">
-                          {formatBDT(item.advancePayment)}
+                          {formatBDT(effectiveAdvAmount)}
                         </span>
                         <span
                           className={`inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -1121,10 +1157,10 @@ export const MainLedger: React.FC<Props> = ({
                         >
                           {advStatus}
                         </span>
-                        {advStatus === 'Paid' && item.advancePayment > 0 && (
+                        {(hasAdvAmount || advStatus === 'Paid' || advStatus === 'Partially Paid') && advStatus !== 'N/A' && !isOwnerFlat && (
                           <div className="mt-1">
                             <button
-                              onClick={() => handleGenerateAdvanceReceipt(item)}
+                              onClick={() => handleGenerateAdvanceReceipt({ ...item, advancePayment: effectiveAdvAmount })}
                               className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-[10px] font-bold transition-colors cursor-pointer"
                               title="Generate Official Advance Payment Receipt"
                             >
@@ -1146,6 +1182,8 @@ export const MainLedger: React.FC<Props> = ({
                               ? 'bg-emerald-100 text-emerald-800'
                               : rentStatus === 'Partially Paid'
                               ? 'bg-amber-100 text-amber-800'
+                              : rentStatus === 'Adjusted'
+                              ? 'bg-purple-100 text-purple-800 border border-purple-200'
                               : rentStatus === 'N/A'
                               ? 'bg-slate-100 text-slate-500'
                               : 'bg-rose-100 text-rose-800'
@@ -1204,6 +1242,11 @@ export const MainLedger: React.FC<Props> = ({
                               >
                                 {elecStatus}
                               </span>
+                              {item.electricityBill > 0 && (
+                                <span className="text-[9px] text-slate-500 font-medium block mt-0.5">
+                                  {getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear).monthName.slice(0, 3)} Bill
+                                </span>
+                              )}
                               {elecStatus === 'Paid' && item.electricityBill > 0 && (
                                 <div className="mt-1">
                                   <button
@@ -1219,11 +1262,6 @@ export const MainLedger: React.FC<Props> = ({
                             </>
                           );
                         })()}
-                      </td>
-
-                      {/* 8. Parking Rent */}
-                      <td className="py-3 px-3 text-right font-mono text-slate-600 whitespace-nowrap">
-                        {item.parkingRent > 0 ? formatBDT(item.parkingRent) : '-'}
                       </td>
                     </tr>
                   );
@@ -1244,9 +1282,6 @@ export const MainLedger: React.FC<Props> = ({
                 </td>
                 <td className="py-3 px-3 text-right text-slate-900 whitespace-nowrap">
                   {formatBDT(filteredItems.reduce((acc, curr) => acc + curr.electricityBill, 0))}
-                </td>
-                <td className="py-3 px-3 text-right text-slate-600 whitespace-nowrap">
-                  {formatBDT(filteredItems.reduce((acc, curr) => acc + curr.parkingRent, 0))}
                 </td>
               </tr>
             </tfoot>
@@ -1333,19 +1368,6 @@ export const MainLedger: React.FC<Props> = ({
                   />
                 </div>
               )}
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">
-                  Notes
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. October monthly rent and postpaid electricity bill"
-                  value={payNotes}
-                  onChange={(e) => setPayNotes(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-                />
-              </div>
             </div>
 
             <div className="mt-6 pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
@@ -1544,7 +1566,6 @@ export const MainLedger: React.FC<Props> = ({
                 </p>
                 <ul className="list-disc list-inside space-y-0.5 pl-1 text-slate-700">
                   <li><strong>7. Electricity Bill:</strong> Set to ৳0 / Empty (ready for your sub-meter manual input)</li>
-                  <li><strong>8. Parking Rent:</strong> Set to ৳0 / Empty (ready for your manual input)</li>
                   <li><strong>Payment Status:</strong> Initialized to &quot;Not Paid&quot; (৳0 paid) for the new month</li>
                 </ul>
               </div>

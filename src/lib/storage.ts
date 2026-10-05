@@ -103,6 +103,7 @@ export const INITIAL_UNITS: Unit[] = [
   { id: 'u-a3', flatId: 'A3', blockId: 'block-a', blockName: 'Block A', floor: 3, unitType: 'residential', monthlyRent: 24000, isOccupied: true, electricityBillingType: 'nesco_submeter', isElectricityEnabled: true },
   { id: 'u-a4', flatId: 'A4', blockId: 'block-a', blockName: 'Block A', floor: 4, unitType: 'residential', monthlyRent: 25000, isOccupied: true, electricityBillingType: 'nesco_submeter', isElectricityEnabled: true, godownSlot: 'G1' },
   { id: 'u-a5', flatId: 'A5', blockId: 'block-a', blockName: 'Block A', floor: 5, unitType: 'residential', monthlyRent: 25000, isOccupied: true, electricityBillingType: 'nesco_submeter', isElectricityEnabled: true },
+  { id: 'u-a5-owner', flatId: 'A5 (Owner)', blockId: 'block-a', blockName: 'Block A', floor: 5, unitType: 'residential', monthlyRent: 0, isOccupied: true, electricityBillingType: 'fixed', isElectricityEnabled: false, fixedElectricityAmount: 0, notes: 'Owner residence' },
   { id: 'u-a6', flatId: 'A6', blockId: 'block-a', blockName: 'Block A', floor: 6, unitType: 'residential', monthlyRent: 25000, isOccupied: true, electricityBillingType: 'nesco_submeter', isElectricityEnabled: true },
   { id: 'u-a7', flatId: 'A7', blockId: 'block-a', blockName: 'Block A', floor: 7, unitType: 'residential', monthlyRent: 26000, isOccupied: true, electricityBillingType: 'nesco_submeter', isElectricityEnabled: true },
 
@@ -138,6 +139,7 @@ export const INITIAL_TENANTS: Tenant[] = [
   { id: 't-a3', unitId: 'u-a3', flatId: 'A3', blockName: 'Block A', fullName: 'SHARIFUL', phone: '8801760000000', nidNumber: '19882693456789013', email: 'shariful.a3@gmail.com', entryDate: '2024-07-01', emergencyContact: '8801760000000', status: 'active' },
   { id: 't-a4', unitId: 'u-a4', flatId: 'A4', blockName: 'Block A', fullName: 'MST. SABI', phone: '8801700000000', nidNumber: '19922694567890124', email: 'sabi.a4@gmail.com', entryDate: '2025-08-01', emergencyContact: '8801700000000', status: 'active' },
   { id: 't-a5', unitId: 'u-a5', flatId: 'A5', blockName: 'Block A', fullName: 'RASHED V', phone: '8801720000000', nidNumber: '19852695678901235', email: 'rashed.a5@gmail.com', entryDate: '2025-08-01', emergencyContact: '8801720000000', status: 'active' },
+  { id: 't-a5-owner', unitId: 'u-a5-owner', flatId: 'A5 (Owner)', blockName: 'Block A', fullName: 'Rashed (Owner)', phone: '01712-345678', nidNumber: '19852695678901235', email: 'rashed.blocka@mbdapartment.com', entryDate: '2024-01-01', emergencyContact: '01737-321998', status: 'active' },
   { id: 't-a6', unitId: 'u-a6', flatId: 'A6', blockName: 'Block A', fullName: 'SUMAIYA', phone: '8801310000000', nidNumber: '19872696789012346', email: 'sumaiya.a6@gmail.com', entryDate: '2024-06-03', emergencyContact: '8801310000000', status: 'active' },
   { id: 't-a7', unitId: 'u-a7', flatId: 'A7', blockName: 'Block A', fullName: 'GERMAN A', phone: '8801740000000', nidNumber: '19932697890123457', email: 'german.a7@gmail.com', entryDate: '2025-10-14', emergencyContact: '8801740000000', status: 'active' },
 
@@ -161,6 +163,7 @@ export const INITIAL_ADVANCE_ACCOUNTS: AdvanceAccount[] = [
   { id: 'adv-a3', tenantId: 't-a3', unitId: 'u-a3', flatId: 'A3', totalRequired: 48000, amountPaid: 48000, remainingAdvance: 48000, status: 'paid', lastPaymentDate: '2024-02-10', updatedAt: '2024-02-10' },
   { id: 'adv-a4', tenantId: 't-a4', unitId: 'u-a4', flatId: 'A4', totalRequired: 50000, amountPaid: 50000, remainingAdvance: 50000, status: 'paid', lastPaymentDate: '2025-08-01', updatedAt: '2025-08-01' },
   { id: 'adv-a5', tenantId: 't-a5', unitId: 'u-a5', flatId: 'A5', totalRequired: 50000, amountPaid: 50000, remainingAdvance: 50000, status: 'paid', lastPaymentDate: '2025-08-01', updatedAt: '2025-08-01' },
+  { id: 'adv-a5-owner', tenantId: 't-a5-owner', unitId: 'u-a5-owner', flatId: 'A5 (Owner)', totalRequired: 0, amountPaid: 0, remainingAdvance: 0, status: 'paid', lastPaymentDate: '2024-01-01', updatedAt: '2024-01-01' },
   { id: 'adv-a6', tenantId: 't-a6', unitId: 'u-a6', flatId: 'A6', totalRequired: 50000, amountPaid: 50000, remainingAdvance: 50000, status: 'paid', lastPaymentDate: '2024-06-03', updatedAt: '2024-06-03' },
   { id: 'adv-a7', tenantId: 't-a7', unitId: 'u-a7', flatId: 'A7', totalRequired: 52000, amountPaid: 52000, remainingAdvance: 52000, status: 'paid', lastPaymentDate: '2025-10-14', updatedAt: '2025-10-14' },
 
@@ -270,7 +273,7 @@ export function generateInitialLedger(month: number = 10, year: number = 2026): 
 
     if (!unit.isOccupied) {
       paymentStatus = 'N/A';
-    } else if (unit.flatId === 'A5 Owner' || unit.flatId === 'C5 Owner') {
+    } else if (unit.flatId === 'A5 (Owner)' || unit.flatId === 'A5 Owner' || unit.flatId === 'C5 Owner' || unit.flatId.includes('Owner')) {
       paymentStatus = 'N/A';
     } else if (unit.flatId === 'A1') {
       totalPaid = totalPayable;
@@ -553,11 +556,34 @@ export function loadDatabaseState(): AppDatabaseState {
               ? false
               : u.electricityBillingType === 'nesco_submeter',
         }));
-        // Ensure Block A units have A1-A7
+        // Ensure Block A units have A1-A7 and A5 (Owner)
         const hasA5 = parsed.units.some((u) => u.flatId === 'A5');
         if (!hasA5) {
           parsed.units = parsed.units.filter((u) => !(u.blockName === 'Block A' || u.flatId.startsWith('A')));
           parsed.units.unshift(...INITIAL_UNITS.filter((u) => u.blockName === 'Block A'));
+        }
+        const hasA5Owner = parsed.units.some((u) => u.flatId === 'A5 (Owner)' || u.flatId === 'A5 Owner');
+        if (!hasA5Owner) {
+          const a5Idx = parsed.units.findIndex((u) => u.flatId === 'A5');
+          const ownerUnit: Unit = {
+            id: 'u-a5-owner',
+            flatId: 'A5 (Owner)',
+            blockId: 'block-a',
+            blockName: 'Block A',
+            floor: 5,
+            unitType: 'residential',
+            monthlyRent: 0,
+            isOccupied: true,
+            electricityBillingType: 'fixed',
+            isElectricityEnabled: false,
+            fixedElectricityAmount: 0,
+            notes: 'Owner residence',
+          };
+          if (a5Idx >= 0) {
+            parsed.units.splice(a5Idx + 1, 0, ownerUnit);
+          } else {
+            parsed.units.unshift(ownerUnit);
+          }
         }
       }
       if (Array.isArray(parsed.tenants)) {
@@ -566,6 +592,37 @@ export function loadDatabaseState(): AppDatabaseState {
         if (!hasShojib) {
           parsed.tenants = parsed.tenants.filter((t) => !(t.blockName === 'Block A' || t.flatId.startsWith('A')));
           parsed.tenants.unshift(...INITIAL_TENANTS.filter((t) => t.blockName === 'Block A'));
+        }
+        if (!parsed.tenants.some((t) => t.flatId === 'A5 (Owner)' || t.flatId === 'A5 Owner')) {
+          parsed.tenants.push({
+            id: 't-a5-owner',
+            unitId: 'u-a5-owner',
+            flatId: 'A5 (Owner)',
+            blockName: 'Block A',
+            fullName: 'Rashed (Owner)',
+            phone: '01712-345678',
+            nidNumber: '19852695678901235',
+            email: 'rashed.blocka@mbdapartment.com',
+            entryDate: '2024-01-01',
+            emergencyContact: '01737-321998',
+            status: 'active',
+          });
+        }
+      }
+      if (Array.isArray(parsed.advanceAccounts)) {
+        if (!parsed.advanceAccounts.some((a) => a.flatId === 'A5 (Owner)' || a.flatId === 'A5 Owner')) {
+          parsed.advanceAccounts.push({
+            id: 'adv-a5-owner',
+            tenantId: 't-a5-owner',
+            unitId: 'u-a5-owner',
+            flatId: 'A5 (Owner)',
+            totalRequired: 0,
+            amountPaid: 0,
+            remainingAdvance: 0,
+            status: 'paid',
+            lastPaymentDate: '2024-01-01',
+            updatedAt: '2024-01-01',
+          });
         }
       }
       if (Array.isArray(parsed.ledgerItems)) {
@@ -579,6 +636,71 @@ export function loadDatabaseState(): AppDatabaseState {
             ...augItems,
           ];
         }
+
+        // Ensure A5 (Owner) row exists for every month present in ledgerItems
+        const periods = Array.from(new Set(parsed.ledgerItems.map((i) => `${i.month}-${i.year}`)));
+        periods.forEach((period) => {
+          const [m, y] = period.split('-').map(Number);
+          const hasOwnerRow = parsed.ledgerItems.some(
+            (i) => (i.flatId === 'A5 (Owner)' || i.flatId === 'A5 Owner') && i.month === m && i.year === y
+          );
+          if (!hasOwnerRow) {
+            parsed.ledgerItems.push({
+              id: `led-a5-owner-${m}-${y}`,
+              unitId: 'u-a5-owner',
+              flatId: 'A5 (Owner)',
+              blockName: 'Block A',
+              blockKey: 'blockA',
+              month: m,
+              year: y,
+              billingPeriod: `${y}-${String(m).padStart(2, '0')}`,
+              tenantId: 't-a5-owner',
+              tenantName: 'Rashed (Owner)',
+              tenantPhone: '01712-345678',
+              entryDate: '2024-01-01',
+              advancePayment: 0,
+              advanceStatus: 'N/A',
+              flatRent: 0,
+              rentStatus: 'N/A',
+              electricityBill: 0,
+              electricityStatus: 'N/A',
+              parkingRent: 0,
+              godownRent: 0,
+              totalPayable: 0,
+              totalPaid: 0,
+              totalDue: 0,
+              paymentStatus: 'N/A',
+              adjustedFromAdvance: 0,
+              notes: 'Owner residence',
+            });
+          }
+        });
+
+        // Ensure any ledger item with Paid/Partially Paid advance status has its actual advance deposit amount
+        parsed.ledgerItems = parsed.ledgerItems.map((item) => {
+          const isOwner = (item.flatId || '').toLowerCase().includes('owner');
+          if (isOwner) {
+            return { ...item, advancePayment: 0, advanceStatus: 'N/A' };
+          }
+          if (
+            (item.advanceStatus === 'Paid' || item.advanceStatus?.toLowerCase() === 'paid' || (item.advanceStatus as any) === 'partially_paid' || item.advanceStatus === 'Partially Paid') &&
+            (!item.advancePayment || item.advancePayment === 0)
+          ) {
+            const advAcc = parsed.advanceAccounts?.find((a) => a.flatId === item.flatId);
+            const unit = parsed.units?.find((u) => u.flatId === item.flatId);
+            const resolvedAdv = (advAcc?.amountPaid && advAcc.amountPaid > 0)
+              ? advAcc.amountPaid
+              : (advAcc?.totalRequired && advAcc.totalRequired > 0)
+              ? advAcc.totalRequired
+              : (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000);
+            return {
+              ...item,
+              advancePayment: resolvedAdv,
+              advanceStatus: 'Paid',
+            };
+          }
+          return item;
+        });
       }
     }
     if (parsed && parsed.paymentSettings) {

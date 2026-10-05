@@ -463,8 +463,24 @@ export default function App() {
         timestamp: new Date().toISOString(),
       };
 
+      // Also sync active month ledger item advance payment & status
+      const updatedLedgerItems = prev.ledgerItems.map((item) => {
+        if (item.flatId === flatId && item.month === prev.selectedMonth && item.year === prev.selectedYear) {
+          const matchingAcc = updatedAccounts.find((a) => a.flatId === flatId);
+          const totalPaidAdv = matchingAcc ? matchingAcc.amountPaid : amount;
+          return {
+            ...item,
+            advancePayment: totalPaidAdv,
+            advanceStatus: 'Paid' as const,
+            advanceDate: new Date().toISOString().split('T')[0],
+          };
+        }
+        return item;
+      });
+
       return {
         ...prev,
+        ledgerItems: updatedLedgerItems,
         advanceAccounts: updatedAccounts,
         advanceTransactions: [advTx, ...prev.advanceTransactions],
         auditLogs: [audit, ...prev.auditLogs],
@@ -748,9 +764,29 @@ export default function App() {
         timestamp: new Date().toISOString(),
       };
 
+      // Sync advance accounts
+      let updatedAdvanceAccounts = prev.advanceAccounts;
+      if (savedItem.advancePayment !== undefined) {
+        const advIndex = prev.advanceAccounts.findIndex((a) => a.flatId === savedItem.flatId);
+        if (advIndex >= 0) {
+          updatedAdvanceAccounts = [...prev.advanceAccounts];
+          const acc = updatedAdvanceAccounts[advIndex];
+          const advPaid = Number(savedItem.advancePayment || 0);
+          updatedAdvanceAccounts[advIndex] = {
+            ...acc,
+            amountPaid: advPaid,
+            remainingAdvance: advPaid,
+            status: advPaid >= (acc.totalRequired || advPaid) ? 'paid' : (advPaid > 0 ? 'partially_paid' : 'not_paid'),
+            lastPaymentDate: savedItem.advanceDate || acc.lastPaymentDate || new Date().toISOString().split('T')[0],
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      }
+
       return {
         ...prev,
         ledgerItems: updatedLedger,
+        advanceAccounts: updatedAdvanceAccounts,
         auditLogs: [audit, ...prev.auditLogs],
       };
     });
@@ -790,15 +826,16 @@ export default function App() {
 
       // Build copied items with reset payment statuses
       const newTargetItems: MonthlyLedgerItem[] = sourceItems.map((src) => {
-        const flatRent = src.flatRent;
+        const isOwnerFlat = src.flatId.includes('Owner') || src.tenantName === 'Owner Occupied' || src.tenantName === 'Vacant Flat';
+        const flatRent = isOwnerFlat ? 0 : src.flatRent;
         const electricityBill = 0; // 7. Electricity EMPTY (0) for manual input
         const parkingRent = 0;     // 8. Parking EMPTY (0) for manual input
         const godownRent = src.godownRent || 0;
         const totalPayable = flatRent + godownRent; // Ready for electricity & parking manual inputs
         const totalPaid = 0;
-        const totalDue = totalPayable;
-        const paymentStatus: PaymentStatus =
-          src.tenantName === 'Owner Occupied' || src.tenantName === 'Vacant Flat' ? 'N/A' : 'Not Paid';
+        const totalDue = isOwnerFlat ? 0 : totalPayable;
+        const paymentStatus: PaymentStatus = isOwnerFlat ? 'N/A' : 'Not Paid';
+        const rentStatus: PaymentStatus = isOwnerFlat ? 'N/A' : 'Not Paid';
 
         return {
           id: `led-${src.flatId.toLowerCase()}-${targetPeriod}`,
@@ -812,11 +849,11 @@ export default function App() {
           billingPeriod: targetPeriod,  // Strict YYYY-MM column
           month: targetMonth,
           year: targetYear,
-          advancePayment: src.advancePayment, // 5. Advance copied
-          advanceStatus: src.advanceStatus || (src.advancePayment > 0 ? 'Paid' : 'Not Paid'),
-          advanceDate: src.advanceDate,
-          flatRent: src.flatRent,       // 6. Flat Rent copied
-          rentStatus: 'Not Paid',
+          advancePayment: isOwnerFlat ? 0 : src.advancePayment, // 5. Advance copied
+          advanceStatus: isOwnerFlat ? 'N/A' : (src.advanceStatus || (src.advancePayment > 0 ? 'Paid' : 'Not Paid')),
+          advanceDate: isOwnerFlat ? undefined : src.advanceDate,
+          flatRent,                     // 6. Flat Rent copied
+          rentStatus,
           rentPaymentDate: undefined,
           electricityBill: 0,           // 7. Electricity EMPTY for manual input
           electricityStatus: 'N/A',
@@ -829,7 +866,7 @@ export default function App() {
           paymentStatus,
           adjustedFromAdvance: 0,
           lastPaymentDate: undefined,
-          notes: '',
+          notes: src.notes || '',
         };
       });
 
@@ -863,6 +900,8 @@ export default function App() {
   };
 
   // Handle Import from Excel or Google Sheet
+  // Strictly: 1. Flat ID, 2. Tenant Name, 3. Mobile, 4. Entry Date, 5. Advance
+  // If any field is empty, it leaves it as it is and proceeds to next
   const handleImportLedgerData = (
     importedItems: MonthlyLedgerItem[],
     targetMonth: number,
@@ -882,64 +921,34 @@ export default function App() {
       importedItems.forEach((newItem) => {
         const idx = updatedThisMonth.findIndex((i) => i.flatId === newItem.flatId);
         if (idx >= 0) {
+          const existing = updatedThisMonth[idx];
+          // Strictly only upload: 1. Flat ID, 2. Tenant Name, 3. Mobile, 4. Entry Date, 5. Advance
+          // If any field is empty, leave it as it is and do next
+          const tenantName =
+            newItem.tenantName && newItem.tenantName.trim() ? newItem.tenantName.trim() : existing.tenantName;
+          const tenantPhone =
+            newItem.tenantPhone && newItem.tenantPhone.trim() ? newItem.tenantPhone.trim() : existing.tenantPhone;
+          const entryDate =
+            newItem.entryDate && newItem.entryDate.trim() ? newItem.entryDate.trim() : existing.entryDate;
+          const advancePayment =
+            newItem.advancePayment !== undefined && newItem.advancePayment !== null && !isNaN(newItem.advancePayment)
+              ? newItem.advancePayment
+              : existing.advancePayment;
+          const advanceStatus = newItem.advanceStatus || existing.advanceStatus;
+
           updatedThisMonth[idx] = {
-            ...updatedThisMonth[idx],
-            ...newItem,
+            ...existing,
+            tenantName,
+            tenantPhone,
+            entryDate,
+            advancePayment,
+            advanceStatus,
+            // Strictly preserve: flatRent, electricityBill, parkingRent, godownRent, paymentStatus, rentStatus, electricityStatus, totalPaid, totalPayable, totalDue
           };
         } else {
           updatedThisMonth.push(newItem);
         }
       });
-
-      // 2. Optionally update Units roster
-      let updatedUnits = [...prev.units];
-      if (options.updateUnits) {
-        updatedUnits = updatedUnits.map((u) => {
-          const matching = importedItems.find((i) => i.flatId === u.flatId);
-          if (matching) {
-            return {
-              ...u,
-              monthlyRent: matching.flatRent || u.monthlyRent,
-              isOccupied: matching.tenantName !== 'Vacant Flat' && !matching.flatId.includes('Owner'),
-            };
-          }
-          return u;
-        });
-      }
-
-      // 3. Optionally update Tenants roster
-      let updatedTenants = [...prev.tenants];
-      if (options.updateTenants) {
-        importedItems.forEach((item) => {
-          if (item.tenantName && item.tenantName !== 'Vacant Flat' && !item.flatId.includes('Owner')) {
-            const idx = updatedTenants.findIndex((t) => t.flatId === item.flatId);
-            if (idx >= 0) {
-              updatedTenants[idx] = {
-                ...updatedTenants[idx],
-                fullName: item.tenantName,
-                phone: item.tenantPhone || updatedTenants[idx].phone,
-                entryDate: item.entryDate || updatedTenants[idx].entryDate,
-              };
-            }
-          }
-        });
-      }
-
-      // 4. Optionally update Advance Accounts
-      let updatedAdvanceAccounts = [...prev.advanceAccounts];
-      if (options.updateAdvance) {
-        importedItems.forEach((item) => {
-          if (item.advancePayment > 0) {
-            const idx = updatedAdvanceAccounts.findIndex((a) => a.flatId === item.flatId);
-            if (idx >= 0) {
-              updatedAdvanceAccounts[idx] = {
-                ...updatedAdvanceAccounts[idx],
-                amountPaid: item.advancePayment,
-              };
-            }
-          }
-        });
-      }
 
       const audit = {
         id: `log-${Date.now()}`,
@@ -948,7 +957,7 @@ export default function App() {
         entityId: `ledger-${targetMonth}-${targetYear}`,
         performedBy: activeUserFullName,
         userRole: activeUserRole,
-        details: `Imported and extracted ${importedItems.length} records from spreadsheet into ${targetMonth}/${targetYear} ledger. Auto-sync: Units=${options.updateUnits}, Tenants=${options.updateTenants}, Advance=${options.updateAdvance}`,
+        details: `Overrode ledger data for ${getMonthName(targetMonth)} ${targetYear} only (${importedItems.length} flats updated). Other months remain unchanged.`,
         timestamp: new Date().toISOString(),
       };
 
@@ -962,9 +971,6 @@ export default function App() {
       return {
         ...prev,
         ledgerItems: [...otherMonthsItems, ...updatedThisMonth],
-        units: updatedUnits,
-        tenants: updatedTenants,
-        advanceAccounts: updatedAdvanceAccounts,
         selectedMonth: targetMonth,
         selectedYear: targetYear,
         auditLogs: [audit, ...prev.auditLogs],

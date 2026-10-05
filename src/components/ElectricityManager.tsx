@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Zap,
   Calculator,
@@ -36,8 +36,10 @@ import {
   getMonthName,
   MONTH_NAMES,
   DEFAULT_NESCO_TARIFF,
+  getPostpaidElectricityPeriod,
 } from '../lib/nescoTariff';
 import { COMPLEX_CONFIG } from '../lib/complexConfig';
+import { DateInputDDMMYYYY } from './DateInputDDMMYYYY';
 
 interface Props {
   data: AppDatabaseState;
@@ -60,13 +62,17 @@ export const ElectricityManager: React.FC<Props> = ({
   onOpenTariffModal,
   userRole,
 }) => {
-  // Consumption month is typically previous month (e.g., September for October billing)
-  const [consumptionMonth, setConsumptionMonth] = useState<number>(
-    data.selectedMonth === 1 ? 12 : data.selectedMonth - 1
-  );
-  const [consumptionYear, setConsumptionYear] = useState<number>(
-    data.selectedMonth === 1 ? data.selectedYear - 1 : data.selectedYear
-  );
+  // Consumption month is strictly postpaid: if flat rent month is August (8), electricity billing period is July (7)
+  const defaultElecPeriod = getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear);
+  const [consumptionMonth, setConsumptionMonth] = useState<number>(defaultElecPeriod.month);
+  const [consumptionYear, setConsumptionYear] = useState<number>(defaultElecPeriod.year);
+
+  // Automatically update consumption period when selected month/year changes
+  useEffect(() => {
+    const elecPeriod = getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear);
+    setConsumptionMonth(elecPeriod.month);
+    setConsumptionYear(elecPeriod.year);
+  }, [data.selectedMonth, data.selectedYear]);
 
   const [activeTab, setActiveTab] = useState<'bills' | 'readings' | 'calculator'>('bills');
 
@@ -397,7 +403,7 @@ export const ElectricityManager: React.FC<Props> = ({
           <div>
             <span className="font-bold text-amber-900">Postpaid Electricity Billing Cycle:</span>
             <p className="text-amber-800">
-              Meter reading taken for <strong>{getMonthName(consumptionMonth)} {consumptionYear}</strong> consumption generates the electricity bill that is added to the <strong>{getMonthName(data.selectedMonth)} {data.selectedYear}</strong> collection ledger.
+              Postpaid service rule: If flat rent month is <strong>{getMonthName(data.selectedMonth)} {data.selectedYear}</strong>, the electricity billing period is <strong>{getPostpaidElectricityPeriod(data.selectedMonth, data.selectedYear).displayStr}</strong>. Meter readings taken for <strong>{getMonthName(consumptionMonth)} {consumptionYear}</strong> consumption generate the electricity bill collected in <strong>{getMonthName(data.selectedMonth)} {data.selectedYear}</strong> rent.
             </p>
           </div>
         </div>
@@ -1003,28 +1009,18 @@ export const ElectricityManager: React.FC<Props> = ({
 
               {/* Billing Period */}
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
-                    Period From
-                  </label>
-                  <input
-                    type="date"
-                    value={genDateFrom}
-                    onChange={(e) => setGenDateFrom(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-xs text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
-                    Period To
-                  </label>
-                  <input
-                    type="date"
-                    value={genDateTo}
-                    onChange={(e) => setGenDateTo(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-xs text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
+                <DateInputDDMMYYYY
+                  label="Period From"
+                  value={genDateFrom}
+                  onChange={setGenDateFrom}
+                  isEnabled={true}
+                />
+                <DateInputDDMMYYYY
+                  label="Period To"
+                  value={genDateTo}
+                  onChange={setGenDateTo}
+                  isEnabled={true}
+                />
               </div>
 
               {/* Unit Input Method Toggle */}

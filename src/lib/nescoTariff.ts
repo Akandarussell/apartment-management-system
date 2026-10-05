@@ -123,20 +123,48 @@ export function formatBDT(amount: number | undefined | null): string {
 }
 
 /**
- * Format Date to DD-MM-YYYY as strictly required by prompt
+ * Format Date strictly to DD/MM/YYYY with slashes as required (immune to timezone shift)
  */
 export function formatDateDDMMYYYY(dateString?: string): string {
-  if (!dateString) return 'N/A';
-  try {
-    const d = new Date(dateString);
-    if (isNaN(d.getTime())) return dateString;
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const year = d.getFullYear();
-    return `${day}-${month}-${year}`;
-  } catch {
-    return dateString;
+  if (!dateString || dateString === 'N/A' || dateString === 'null' || dateString === 'undefined') {
+    return 'N/A';
   }
+  const str = String(dateString).trim();
+  if (!str) return 'N/A';
+
+  // 1. Direct regex for ISO YYYY-MM-DD (prevents UTC-to-local timezone day shift)
+  const ymd = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (ymd) {
+    const y = ymd[1];
+    const m = ymd[2].padStart(2, '0');
+    const d = ymd[3].padStart(2, '0');
+    return `${d}/${m}/${y}`;
+  }
+
+  // 2. Direct regex for DD/MM/YYYY or DD-MM-YYYY
+  const dmy = str.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+  if (dmy) {
+    const d = dmy[1].padStart(2, '0');
+    const m = dmy[2].padStart(2, '0');
+    let y = dmy[3];
+    if (y.length === 2) y = `20${y}`;
+    return `${d}/${m}/${y}`;
+  }
+
+  // 3. Fallback for generic Date objects or ISO strings with time
+  try {
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) {
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const year = d.getUTCFullYear();
+      return `${day}/${month}/${year}`;
+    }
+  } catch {
+    // fallback
+  }
+
+  return str;
 }
 
 export const MONTH_NAMES = [
@@ -146,4 +174,63 @@ export const MONTH_NAMES = [
 
 export function getMonthName(monthNumber: number): string {
   return MONTH_NAMES[monthNumber - 1] || `Month ${monthNumber}`;
+}
+
+/**
+ * Format Date strictly to DD/MM/YYYY format with slashes (immune to timezone shift)
+ */
+export function formatDateDDSlashMMSlashYYYY(dateString?: string): string {
+  if (!dateString || dateString === 'N/A' || dateString === 'null' || dateString === 'undefined') {
+    return '';
+  }
+  const str = String(dateString).trim();
+  if (!str) return '';
+
+  const ymd = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (ymd) {
+    const y = ymd[1];
+    const m = ymd[2].padStart(2, '0');
+    const d = ymd[3].padStart(2, '0');
+    return `${d}/${m}/${y}`;
+  }
+
+  const dmy = str.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+  if (dmy) {
+    const d = dmy[1].padStart(2, '0');
+    const m = dmy[2].padStart(2, '0');
+    let y = dmy[3];
+    if (y.length === 2) y = `20${y}`;
+    return `${d}/${m}/${y}`;
+  }
+
+  try {
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) {
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const year = d.getUTCFullYear();
+      return `${day}/${month}/${year}`;
+    }
+  } catch {}
+
+  return str;
+}
+
+/**
+ * Calculates the Postpaid Electricity Billing Period corresponding to a flat rent month/year.
+ * Requirement: If flat rent month is August (8), then electricity billing period is July (7) as electricity is postpaid.
+ */
+export function getPostpaidElectricityPeriod(flatRentMonth: number, flatRentYear: number): {
+  month: number;
+  year: number;
+  monthName: string;
+  periodStr: string;
+  displayStr: string;
+} {
+  const month = flatRentMonth === 1 ? 12 : flatRentMonth - 1;
+  const year = flatRentMonth === 1 ? flatRentYear - 1 : flatRentYear;
+  const monthName = getMonthName(month);
+  const periodStr = `${year}-${String(month).padStart(2, '0')}`;
+  const displayStr = `${monthName} ${year}`;
+  return { month, year, monthName, periodStr, displayStr };
 }

@@ -136,7 +136,9 @@ app.post('/api/fetch-sheet', async (req, res) => {
       const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
       if (match) {
         const id = match[1];
-        fetchUrl = `https://docs.google.com/spreadsheets/d/${id}/export?format=csv`;
+        const gidMatch = url.match(/[#&?]gid=([0-9]+)/);
+        const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
+        fetchUrl = `https://docs.google.com/spreadsheets/d/${id}/export?format=csv${gidParam}`;
       }
     }
     const response = await fetch(fetchUrl);

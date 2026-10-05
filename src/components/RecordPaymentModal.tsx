@@ -9,6 +9,8 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { MonthlyLedgerItem, Unit } from '../types';
+import { DateInputDDMMYYYY } from './DateInputDDMMYYYY';
+import { getPostpaidElectricityPeriod, getMonthName } from '../lib/nescoTariff';
 
 export interface LedgerRecordFormData {
   flatId: string;
@@ -62,28 +64,33 @@ export const RecordPaymentModal: React.FC<Props> = ({
 
   // Section 2: Flat Rent
   const [rentStatus, setRentStatus] = useState<'Paid' | 'Not Paid' | 'Partially Paid' | 'Adjusted' | 'N/A'>(
-    (initialItem?.paymentStatus as any) || 'Paid'
+    initialItem?.rentStatus || (initialItem?.paymentStatus as any) || 'Not Paid'
   );
   const [rentPaidAmount, setRentPaidAmount] = useState<number>(
-    initialItem ? initialItem.totalPaid : 8500
+    initialItem ? initialItem.totalPaid : 0
   );
   const [rentOutstandingDue, setRentOutstandingDue] = useState<number>(
     initialItem ? initialItem.totalDue : 0
   );
-  const [rentPaymentDate, setRentPaymentDate] = useState<string>(
-    initialItem?.rentPaymentDate || initialItem?.lastPaymentDate || '2026-09-08'
-  );
+  const [rentPaymentDate, setRentPaymentDate] = useState<string>(() => {
+    const rStat = initialItem?.rentStatus || initialItem?.paymentStatus;
+    if (rStat === 'Adjusted') return initialItem?.advanceDate || initialItem?.entryDate || '';
+    if (rStat === 'Paid' || rStat === 'Partially Paid') return initialItem?.rentPaymentDate || initialItem?.lastPaymentDate || '';
+    return '';
+  });
 
   // Section 3: Electricity
   const [electricityStatus, setElectricityStatus] = useState<'Paid' | 'Not Paid' | 'N/A'>(
-    initialItem?.electricityStatus || (initialItem && initialItem.electricityBill > 0 ? 'Paid' : 'N/A')
+    initialItem?.electricityStatus || (initialItem && initialItem.electricityBill > 0 ? 'Not Paid' : 'N/A')
   );
   const [electricityAmount, setElectricityAmount] = useState<number>(
-    initialItem ? initialItem.electricityBill : 1200
+    initialItem ? initialItem.electricityBill : 0
   );
-  const [electricityDate, setElectricityDate] = useState<string>(
-    initialItem?.electricityDate || '2026-09-02'
-  );
+  const [electricityDate, setElectricityDate] = useState<string>(() => {
+    const eStat = initialItem?.electricityStatus;
+    if (eStat === 'Paid' || (eStat as any) === 'Partially Paid') return initialItem?.electricityDate || initialItem?.lastPaymentDate || '';
+    return '';
+  });
 
   // Reset form when initialItem changes
   useEffect(() => {
@@ -94,18 +101,51 @@ export const RecordPaymentModal: React.FC<Props> = ({
       setEntryDate(initialItem.entryDate || '2025-06-01');
       setFlatMonthlyRent(initialItem.flatRent);
 
-      setAdvanceStatus(initialItem.advanceStatus || (initialItem.advancePayment > 0 ? 'Paid' : 'Not Paid'));
+      const aStatus = initialItem.advanceStatus || (initialItem.advancePayment > 0 ? 'Paid' : 'Not Paid');
+      setAdvanceStatus(aStatus);
       setAdvanceAmount(initialItem.advancePayment);
-      setAdvanceDate(initialItem.advanceDate || initialItem.entryDate || '2025-06-01');
+      setAdvanceDate(
+        aStatus === 'Paid' || aStatus === 'Partially Paid'
+          ? initialItem.advanceDate || initialItem.entryDate || ''
+          : ''
+      );
 
-      setRentStatus((initialItem.paymentStatus as any) || 'Paid');
+      const rStatus =
+        initialItem.rentStatus ||
+        (initialItem.paymentStatus === 'Paid'
+          ? 'Paid'
+          : initialItem.paymentStatus === 'Adjusted'
+          ? 'Adjusted'
+          : initialItem.paymentStatus === 'Partially Paid'
+          ? 'Partially Paid'
+          : initialItem.paymentStatus === 'N/A'
+          ? 'N/A'
+          : 'Not Paid');
+      setRentStatus(rStatus);
       setRentPaidAmount(initialItem.totalPaid);
       setRentOutstandingDue(initialItem.totalDue);
-      setRentPaymentDate(initialItem.rentPaymentDate || initialItem.lastPaymentDate || '2026-09-08');
+      if (rStatus === 'Adjusted') {
+        setRentPaymentDate(initialItem.advanceDate || initialItem.entryDate || '');
+      } else if (rStatus === 'Paid' || rStatus === 'Partially Paid') {
+        setRentPaymentDate(initialItem.rentPaymentDate || initialItem.lastPaymentDate || '');
+      } else {
+        setRentPaymentDate('');
+      }
 
-      setElectricityStatus(initialItem.electricityStatus || (initialItem.electricityBill > 0 ? 'Paid' : 'N/A'));
+      const eStatus =
+        initialItem.electricityStatus ||
+        (initialItem.electricityBill > 0
+          ? initialItem.paymentStatus === 'Paid'
+            ? 'Paid'
+            : 'Not Paid'
+          : 'N/A');
+      setElectricityStatus(eStatus);
       setElectricityAmount(initialItem.electricityBill);
-      setElectricityDate(initialItem.electricityDate || '2026-09-02');
+      if (eStatus === 'Paid' || (eStatus as any) === 'Partially Paid') {
+        setElectricityDate(initialItem.electricityDate || initialItem.lastPaymentDate || '');
+      } else {
+        setElectricityDate('');
+      }
     }
   }, [initialItem]);
 
@@ -128,16 +168,54 @@ export const RecordPaymentModal: React.FC<Props> = ({
     return `${years} year${years > 1 ? 's' : ''}, ${remMonths} month${remMonths > 1 ? 's' : ''}`;
   };
 
+  const elecPeriod = getPostpaidElectricityPeriod(selectedMonth, selectedYear);
+
+  const isAdvanceDateEnabled = advanceAmount > 0;
+  const isRentDateEnabled = rentStatus === 'Paid' || rentStatus === 'Partially Paid';
+  const isElectricityDateEnabled = electricityStatus === 'Paid' || (electricityStatus as any) === 'Partially Paid';
+
+  const handleAdvanceDateChange = (val: string) => {
+    setAdvanceDate(val);
+    if (rentStatus === 'Adjusted' && val) {
+      setRentPaymentDate(val);
+    }
+  };
+
+  const handleRentStatusChange = (val: 'Paid' | 'Not Paid' | 'Partially Paid' | 'Adjusted' | 'N/A') => {
+    setRentStatus(val);
+    if (val === 'Adjusted') {
+      const matched = advanceDate || entryDate || new Date().toISOString().split('T')[0];
+      setRentPaymentDate(matched);
+      setRentPaidAmount(0);
+      setRentOutstandingDue(0);
+    } else if (val === 'Paid' || val === 'Partially Paid') {
+      if (!rentPaymentDate) {
+        setRentPaymentDate(new Date().toISOString().split('T')[0]);
+      }
+    } else {
+      setRentPaymentDate('');
+    }
+  };
+
+  const handleElectricityStatusChange = (val: 'Paid' | 'Not Paid' | 'Partially Paid' | 'N/A') => {
+    setElectricityStatus(val as any);
+    if ((val === 'Paid' || (val as any) === 'Partially Paid') && !electricityDate) {
+      setElectricityDate(new Date().toISOString().split('T')[0]);
+    } else if (val === 'Not Paid' || val === 'N/A') {
+      setElectricityDate('');
+    }
+  };
+
   const handlePaidAmountChange = (val: number) => {
     setRentPaidAmount(val);
     const due = Math.max(0, flatMonthlyRent - val);
     setRentOutstandingDue(due);
     if (val === 0) {
-      setRentStatus('Not Paid');
+      handleRentStatusChange('Not Paid');
     } else if (due > 0) {
-      setRentStatus('Partially Paid');
+      handleRentStatusChange('Partially Paid');
     } else {
-      setRentStatus('Paid');
+      handleRentStatusChange('Paid');
     }
   };
 
@@ -155,16 +233,21 @@ export const RecordPaymentModal: React.FC<Props> = ({
       tenantPhone,
       entryDate,
       flatMonthlyRent,
-      advanceStatus,
+      advanceStatus: advanceAmount > 0 ? 'Paid' : 'Not Paid',
       advanceAmount,
-      advanceDate,
+      advanceDate: isAdvanceDateEnabled ? advanceDate : '',
       rentStatus,
       rentPaidAmount,
       rentOutstandingDue,
-      rentPaymentDate,
+      rentPaymentDate:
+        rentStatus === 'Adjusted'
+          ? advanceDate || rentPaymentDate || entryDate
+          : isRentDateEnabled
+          ? rentPaymentDate
+          : '',
       electricityStatus,
       electricityAmount,
-      electricityDate,
+      electricityDate: isElectricityDateEnabled ? electricityDate : '',
     });
     onClose();
   };
@@ -248,15 +331,11 @@ export const RecordPaymentModal: React.FC<Props> = ({
             </div>
 
             <div>
-              <label className="block font-bold text-slate-700 mb-1 flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                Entry Date (Move-in)
-              </label>
-              <input
-                type="date"
+              <DateInputDDMMYYYY
+                label="Entry Date (Move-in)"
                 value={entryDate}
-                onChange={(e) => setEntryDate(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 focus:outline-hidden font-mono"
+                onChange={setEntryDate}
+                isEnabled={true}
               />
               <p className="text-[11px] text-indigo-600 font-semibold mt-1">
                 Duration: {calculateDuration(entryDate)}
@@ -286,24 +365,7 @@ export const RecordPaymentModal: React.FC<Props> = ({
               1. ADVANCE PAYMENT DEPOSIT
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-              <div>
-                <label className="block font-semibold text-slate-600 mb-1 text-[11px]">
-                  Advance Status
-                </label>
-                <select
-                  value={advanceStatus}
-                  onChange={(e) => setAdvanceStatus(e.target.value as any)}
-                  className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden text-xs"
-                >
-                  <option value="Not Paid">Not Paid</option>
-                  <option value="Paid">Paid</option>
-                  <option value="Partially Paid">Partially Paid</option>
-                  <option value="Adjusted">Adjusted</option>
-                  <option value="N/A">N/A (Not Applicable)</option>
-                </select>
-              </div>
-
+            <div className={`grid grid-cols-1 ${isAdvanceDateEnabled ? 'sm:grid-cols-2' : 'sm:grid-cols-1'} gap-2.5`}>
               <div>
                 <label className="block font-semibold text-slate-600 mb-1 text-[11px]">
                   Advance Amount (BDT)
@@ -313,22 +375,34 @@ export const RecordPaymentModal: React.FC<Props> = ({
                   min={0}
                   step="any"
                   value={advanceAmount}
-                  onChange={(e) => setAdvanceAmount(e.target.value === '' ? 0 : Number(e.target.value))}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? 0 : Number(e.target.value);
+                    setAdvanceAmount(val);
+                    if (val > 0) {
+                      setAdvanceStatus('Paid');
+                      if (!advanceDate) {
+                        setAdvanceDate(new Date().toISOString().split('T')[0]);
+                      }
+                    } else {
+                      setAdvanceStatus('Not Paid');
+                      setAdvanceDate('');
+                    }
+                  }}
                   className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold text-slate-900 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden text-xs"
                 />
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-600 mb-1 text-[11px]">
-                  Advance Date
-                </label>
-                <input
-                  type="date"
-                  value={advanceDate}
-                  onChange={(e) => setAdvanceDate(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden text-xs"
-                />
-              </div>
+              {isAdvanceDateEnabled && (
+                <div>
+                  <DateInputDDMMYYYY
+                    label="Advance Date"
+                    value={advanceDate}
+                    onChange={handleAdvanceDateChange}
+                    isEnabled={isAdvanceDateEnabled}
+                    lockedReason="Locked: Enter Advance Amount > 0 to set advance date"
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -346,7 +420,7 @@ export const RecordPaymentModal: React.FC<Props> = ({
                 </label>
                 <select
                   value={rentStatus}
-                  onChange={(e) => setRentStatus(e.target.value as any)}
+                  onChange={(e) => handleRentStatusChange(e.target.value as any)}
                   className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-hidden text-xs"
                 >
                   <option value="Paid">Paid</option>
@@ -385,38 +459,48 @@ export const RecordPaymentModal: React.FC<Props> = ({
                 />
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-600 mb-1 text-[11px]">
-                  Rent Payment Date
-                </label>
-                <input
-                  type="date"
-                  value={rentPaymentDate}
-                  onChange={(e) => setRentPaymentDate(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-hidden text-xs"
-                />
-              </div>
+              {(isRentDateEnabled || rentStatus === 'Adjusted') && (
+                <div>
+                  <DateInputDDMMYYYY
+                    label="Rent Payment Date"
+                    value={rentPaymentDate}
+                    onChange={setRentPaymentDate}
+                    isEnabled={isRentDateEnabled}
+                    lockedReason={
+                      rentStatus === 'Adjusted'
+                        ? 'Locked: Payment date matches advance date (Adjusted from Advance)'
+                        : 'Locked: Select Paid or Partially Paid to set rent date'
+                    }
+                  />
+                </div>
+              )}
             </div>
           </div>
 
           {/* Section 3: ELECTRICITY BILL (Yellow/Amber Bordered Card) */}
           <div className="p-3.5 rounded-xl border border-amber-300 bg-amber-50/20 space-y-2.5">
-            <div className="font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1.5 text-[11px]">
-              <Zap className="w-4 h-4 text-amber-600" />
-              3. ELECTRICITY BILL
+            <div className="font-bold text-amber-700 uppercase tracking-wide flex items-center justify-between text-[11px]">
+              <div className="flex items-center gap-1.5">
+                <Zap className="w-4 h-4 text-amber-600" />
+                3. ELECTRICITY BILL (Postpaid: {elecPeriod.displayStr})
+              </div>
+              <span className="text-[10px] text-amber-800 font-normal">
+                For {getMonthName(selectedMonth)} {selectedYear} Rent
+              </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div className={`grid grid-cols-1 ${isElectricityDateEnabled ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-2.5`}>
               <div>
                 <label className="block font-semibold text-slate-600 mb-1 text-[11px]">
                   E-Bill Status
                 </label>
                 <select
                   value={electricityStatus}
-                  onChange={(e) => setElectricityStatus(e.target.value as any)}
+                  onChange={(e) => handleElectricityStatusChange(e.target.value as any)}
                   className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold text-slate-800 focus:ring-2 focus:ring-amber-500 focus:outline-hidden text-xs"
                 >
                   <option value="Paid">Paid</option>
+                  <option value="Partially Paid">Partially Paid</option>
                   <option value="Not Paid">Not Paid</option>
                   <option value="N/A">N/A (Not Applicable)</option>
                 </select>
@@ -442,17 +526,17 @@ export const RecordPaymentModal: React.FC<Props> = ({
                 />
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-600 mb-1 text-[11px]">
-                  E-Bill Date
-                </label>
-                <input
-                  type="date"
-                  value={electricityDate}
-                  onChange={(e) => setElectricityDate(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono text-slate-800 focus:ring-2 focus:ring-amber-500 focus:outline-hidden text-xs"
-                />
-              </div>
+              {isElectricityDateEnabled && (
+                <div>
+                  <DateInputDDMMYYYY
+                    label="E-Bill Date"
+                    value={electricityDate}
+                    onChange={setElectricityDate}
+                    isEnabled={isElectricityDateEnabled}
+                    lockedReason="Locked: Select Paid or Partially Paid to set electricity date"
+                  />
+                </div>
+              )}
             </div>
           </div>
 

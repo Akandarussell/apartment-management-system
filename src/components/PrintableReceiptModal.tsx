@@ -188,7 +188,7 @@ export const PrintableReceiptModal: React.FC<Props> = ({ receipt, onClose }) => 
   const defaultDesc = isAdvance
     ? 'Security Advance Deposit'
     : isElectricity
-    ? 'Electricity Bill (NESCO Sub-Meter)'
+    ? 'Electricity Bill (NESCO Postpaid Service)'
     : isAdjustment
     ? 'Advance Rent Adjustment'
     : 'Room Rent Payment';
@@ -196,7 +196,7 @@ export const PrintableReceiptModal: React.FC<Props> = ({ receipt, onClose }) => 
   const periodLabel = isAdvance
     ? formatDateDDMMYYYY(receipt.paymentDate)
     : receipt.monthName && receipt.year
-    ? `${receipt.monthName} ${receipt.year}`
+    ? `${receipt.monthName} ${receipt.year}${isElectricity ? ' (Postpaid)' : ''}`
     : `${selectedThemeMonth.charAt(0).toUpperCase() + selectedThemeMonth.slice(1)} ${receipt.year || new Date().getFullYear()}`;
 
   const thankYouText = isAdvance

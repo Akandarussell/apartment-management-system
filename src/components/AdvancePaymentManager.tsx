@@ -381,31 +381,36 @@ export const AdvancePaymentManager: React.FC<Props> = ({
                       {account.notes || '-'}
                     </td>
                     <td className="py-3 px-4 text-center font-sans no-print">
-                      {account.amountPaid > 0 && account.status === 'paid' ? (
+                      {account.amountPaid > 0 ? (
                         <button
                           onClick={() => {
                             const unit = data.units.find((u) => u.flatId === account.flatId);
                             onViewReceipt({
-                              receiptNumber: `ADV-REC-${account.flatId}-01`,
+                              receiptNumber: `ADV-REC-${account.flatId}-${data.selectedYear}`,
                               type: 'advance',
                               tenantName: tenant?.fullName || 'Tenant',
                               tenantPhone: tenant?.phone || '',
                               flatId: account.flatId,
                               blockName: unit?.blockName || 'Block A',
                               amount: account.amountPaid,
-                              paymentDate: account.lastPaymentDate || '2024-01-01',
+                              paymentDate: account.lastPaymentDate || '2026-01-01',
                               paymentMethod: 'Bank Transfer',
-                              purpose: 'Security Advance Deposit for Residential Flat Agreement',
+                              purpose: `Security Advance Deposit for Residential Flat Agreement - Flat ${account.flatId}`,
                               remainingAdvance: account.amountPaid,
                               remainingDue: remaining,
                               authorizedSignatureBy: 'Russell',
                               signatureTitle: 'Russell (Manager)',
                               notes: account.notes,
+                              breakdown: [
+                                { label: 'Security Advance Deposit', amount: account.amountPaid },
+                              ],
                             });
                           }}
-                          className="px-2.5 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded text-xs font-semibold transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded text-xs font-semibold transition-colors cursor-pointer"
+                          title="Generate Official Advance Payment Receipt"
                         >
-                          Receipt
+                          <Receipt className="w-3.5 h-3.5" />
+                          <span>Receipt</span>
                         </button>
                       ) : (
                         <span className="text-slate-400 text-xs">-</span>
@@ -443,6 +448,7 @@ export const AdvancePaymentManager: React.FC<Props> = ({
                 <th className="py-2.5 px-4">Method</th>
                 <th className="py-2.5 px-4">Date</th>
                 <th className="py-2.5 px-4">Recorded By</th>
+                <th className="py-2.5 px-4 text-center no-print">Receipt</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-mono">
@@ -468,6 +474,44 @@ export const AdvancePaymentManager: React.FC<Props> = ({
                   <td className="py-2.5 px-4 font-sans text-slate-600">{tx.paymentMethod}</td>
                   <td className="py-2.5 px-4 font-sans text-slate-500">{formatDateDDMMYYYY(tx.paymentDate)}</td>
                   <td className="py-2.5 px-4 font-sans text-slate-600">{tx.recordedBy}</td>
+                  <td className="py-2.5 px-4 font-sans text-center no-print">
+                    <button
+                      onClick={() => {
+                        const unit = data.units.find((u) => u.flatId === tx.flatId);
+                        const tenant = data.tenants.find((t) => t.id === tx.tenantId || t.flatId === tx.flatId);
+                        onViewReceipt({
+                          receiptNumber: tx.receiptNo,
+                          type: tx.type === 'deposit' ? 'advance' : 'adjustment',
+                          tenantName: tx.tenantName,
+                          tenantPhone: tenant?.phone || '',
+                          flatId: tx.flatId,
+                          blockName: unit?.blockName || 'Block A',
+                          amount: tx.amount,
+                          paymentDate: tx.paymentDate,
+                          paymentMethod: tx.paymentMethod,
+                          purpose:
+                            tx.type === 'deposit'
+                              ? `Security Advance Deposit - Flat ${tx.flatId}`
+                              : `Rent Advance Adjustment Deduction - Flat ${tx.flatId}`,
+                          remainingAdvance: tx.amount,
+                          authorizedSignatureBy: 'Russell',
+                          signatureTitle: 'Russell (Manager)',
+                          notes: tx.notes,
+                          breakdown: [
+                            {
+                              label: tx.type === 'deposit' ? 'Security Advance Deposit' : 'Rent Advance Adjustment',
+                              amount: tx.amount,
+                            },
+                          ],
+                        });
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[10px] font-bold transition-colors cursor-pointer"
+                      title="View / Print Receipt"
+                    >
+                      <Receipt className="w-3 h-3" />
+                      <span>Receipt</span>
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -543,16 +587,6 @@ export const AdvancePaymentManager: React.FC<Props> = ({
                   value={depositTxnId}
                   onChange={(e) => setDepositTxnId(e.target.value)}
                   placeholder="e.g. IBBL-PO-88219"
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Notes</label>
-                <input
-                  type="text"
-                  value={depositNotes}
-                  onChange={(e) => setDepositNotes(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                 />
               </div>

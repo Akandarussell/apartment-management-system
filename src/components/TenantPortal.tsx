@@ -29,7 +29,7 @@ import {
   OnlinePaymentRequest,
   MonthlyLedgerItem,
 } from '../types';
-import { formatBDT, formatDateDDMMYYYY, getMonthName } from '../lib/nescoTariff';
+import { formatBDT, formatDateDDMMYYYY, getMonthName, getPostpaidElectricityPeriod } from '../lib/nescoTariff';
 import { COMPLEX_CONFIG } from '../lib/complexConfig';
 import { INITIAL_BLOCK_MFS_CONFIGS } from '../lib/storage';
 
@@ -190,8 +190,9 @@ export const TenantPortal: React.FC<Props> = ({
   };
 
   const handleGenerateElectricityReceipt = (item: MonthlyLedgerItem) => {
+    const elecPeriod = getPostpaidElectricityPeriod(item.month, item.year);
     onViewReceipt({
-      receiptNumber: `REC-ELEC-${flatId}-${item.month}-${item.year}`,
+      receiptNumber: `REC-ELEC-${flatId}-${elecPeriod.month}-${elecPeriod.year}`,
       type: 'electricity',
       tenantName: tenant?.fullName || currentUser.fullName,
       tenantPhone: tenant?.phone || currentUser.phone || '',
@@ -200,10 +201,12 @@ export const TenantPortal: React.FC<Props> = ({
       amount: item.electricityBill,
       paymentDate: item.electricityDate || item.lastPaymentDate || '2026-10-01',
       paymentMethod: 'bKash',
-      purpose: `NESCO Electricity Bill for ${getMonthName(item.month)} ${item.year} - Flat ${flatId}`,
+      monthName: elecPeriod.monthName,
+      year: elecPeriod.year,
+      purpose: `NESCO Electricity Bill for ${elecPeriod.displayStr} (Postpaid Billing for ${getMonthName(item.month)} ${item.year} Rent) - Flat ${flatId}`,
       ...tenantSignatureMeta,
       breakdown: [
-        { label: `Electricity Consumption (${getMonthName(item.month)} ${item.year})`, amount: item.electricityBill },
+        { label: `Postpaid Electricity Consumption (${elecPeriod.displayStr})`, amount: item.electricityBill },
       ],
     });
   };
@@ -587,7 +590,36 @@ export const TenantPortal: React.FC<Props> = ({
             </thead>
             <tbody className="divide-y divide-slate-100 font-mono">
               {flatLedgerHistory.map((item) => {
-                const advStatus = item.advanceStatus || (item.advancePayment > 0 ? 'Paid' : 'Not Paid');
+                const isOwnerFlat = item.flatId.toLowerCase().includes('owner');
+                const rawAdvStatus = (item.advanceStatus || '').trim();
+                const matchingAdv = data.advanceAccounts.find((a) => a.flatId === item.flatId || a.flatId === flatId);
+                const isMarkedPaid = rawAdvStatus.toLowerCase() === 'paid';
+                const isMarkedPartial = rawAdvStatus.toLowerCase() === 'partially paid' || rawAdvStatus.toLowerCase() === 'partially_paid';
+
+                const effectiveAdvAmount =
+                  Number(item.advancePayment || 0) > 0
+                    ? Number(item.advancePayment || 0)
+                    : (matchingAdv?.amountPaid && matchingAdv.amountPaid > 0)
+                    ? matchingAdv.amountPaid
+                    : (matchingAdv?.totalRequired && matchingAdv.totalRequired > 0)
+                    ? matchingAdv.totalRequired
+                    : (isMarkedPaid ? (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000) : 0);
+
+                const hasAdvAmount = effectiveAdvAmount > 0;
+                const advStatus =
+                  isOwnerFlat
+                    ? 'N/A'
+                    : isMarkedPaid || (hasAdvAmount && rawAdvStatus !== 'N/A' && rawAdvStatus !== 'Not Paid' && rawAdvStatus !== 'not_paid')
+                    ? 'Paid'
+                    : isMarkedPartial
+                    ? 'Partially Paid'
+                    : rawAdvStatus.toLowerCase() === 'adjusted'
+                    ? 'Adjusted'
+                    : rawAdvStatus.toLowerCase() === 'n/a'
+                    ? 'N/A'
+                    : hasAdvAmount
+                    ? 'Paid'
+                    : 'Not Paid';
                 const rentStatus =
                   item.rentStatus ||
                   (item.paymentStatus === 'Paid' || item.paymentStatus === 'Adjusted'
@@ -614,7 +646,7 @@ export const TenantPortal: React.FC<Props> = ({
                     {/* Advance Paid with Status & Receipt */}
                     <td className="py-3 px-4 text-right font-sans whitespace-nowrap">
                       <span className="font-mono font-bold text-indigo-700 block">
-                        {formatBDT(item.advancePayment)}
+                        {formatBDT(effectiveAdvAmount)}
                       </span>
                       <span
                         className={`inline-block mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -629,10 +661,10 @@ export const TenantPortal: React.FC<Props> = ({
                       >
                         {advStatus}
                       </span>
-                      {advStatus === 'Paid' && item.advancePayment > 0 && (
+                      {(hasAdvAmount || advStatus === 'Paid' || advStatus === 'Partially Paid') && advStatus !== 'N/A' && !isOwnerFlat && (
                         <div className="mt-1">
                           <button
-                            onClick={() => handleGenerateAdvanceReceipt(item)}
+                            onClick={() => handleGenerateAdvanceReceipt({ ...item, advancePayment: effectiveAdvAmount })}
                             className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-[10px] font-bold transition-colors cursor-pointer"
                             title="Generate Official Security Advance Receipt (Manager Signed)"
                           >
@@ -701,6 +733,11 @@ export const TenantPortal: React.FC<Props> = ({
                           >
                             {elecStatus}
                           </span>
+                          {item.electricityBill > 0 && (
+                            <span className="text-[9px] text-slate-500 font-medium block mt-0.5">
+                              {getPostpaidElectricityPeriod(item.month, item.year).monthName.slice(0, 3)} Bill
+                            </span>
+                          )}
                           {elecStatus === 'Paid' && item.electricityBill > 0 && (
                             <div className="mt-1">
                               <button
