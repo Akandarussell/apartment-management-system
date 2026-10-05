@@ -148,21 +148,31 @@ export const TenantPortal: React.FC<Props> = ({
   };
 
   const handleGenerateAdvanceReceipt = (item: MonthlyLedgerItem) => {
+    const matchingAdv = data.advanceAccounts.find((a) => a.flatId === item.flatId || a.flatId === flatId);
+    const resolvedAmount =
+      Number(item.advancePayment || 0) > 0
+        ? Number(item.advancePayment || 0)
+        : (matchingAdv?.amountPaid && matchingAdv.amountPaid > 0)
+        ? matchingAdv.amountPaid
+        : (matchingAdv?.totalRequired && matchingAdv.totalRequired > 0)
+        ? matchingAdv.totalRequired
+        : (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000);
+
     onViewReceipt({
-      receiptNumber: `REC-ADV-${flatId}-${item.year}`,
+      receiptNumber: `REC-ADV-${flatId}-${item.year || data.selectedYear}`,
       type: 'advance',
       tenantName: tenant?.fullName || currentUser.fullName,
       tenantPhone: tenant?.phone || currentUser.phone || '',
       flatId: flatId,
       blockName: unit?.blockName || 'Block A',
-      amount: item.advancePayment,
-      paymentDate: item.advanceDate || item.entryDate || '2026-01-01',
+      amount: resolvedAmount,
+      paymentDate: item.advanceDate || matchingAdv?.lastPaymentDate || item.entryDate || '2024-01-01',
       paymentMethod: 'bKash',
       purpose: `Security Advance Deposit - Flat ${flatId} (${unit?.blockName || 'Block A'})`,
-      remainingAdvance: item.advancePayment,
+      remainingAdvance: resolvedAmount,
       ...tenantSignatureMeta,
       breakdown: [
-        { label: 'Security Advance Deposit', amount: item.advancePayment },
+        { label: 'Security Advance Deposit', amount: resolvedAmount },
       ],
     });
   };
@@ -263,12 +273,39 @@ export const TenantPortal: React.FC<Props> = ({
           <p className="text-xs text-slate-500 mt-1">Configured unit contract rate</p>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs">
-          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Security Advance Held</span>
-          <div className="text-xl sm:text-2xl font-black text-indigo-700 mt-2 font-mono">
-            {formatBDT(advance?.amountPaid || 0)}
+        <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between">
+          <div>
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Security Advance Held</span>
+            <div className="text-xl sm:text-2xl font-black text-indigo-700 mt-2 font-mono">
+              {formatBDT(advance?.amountPaid || currentLedgerItem?.advancePayment || 48000)}
+            </div>
+            <p className="text-xs text-slate-500 mt-1">Deposited in escrow account</p>
           </div>
-          <p className="text-xs text-slate-500 mt-1">Deposited in escrow account</p>
+          {!flatId.toLowerCase().includes('owner') && (
+            <div className="mt-3 pt-2 border-t border-slate-100">
+              <button
+                onClick={() => {
+                  const targetItem = currentLedgerItem || flatLedgerHistory[0] || ({
+                    id: `adv-${flatId}`,
+                    flatId,
+                    month: data.selectedMonth,
+                    year: data.selectedYear,
+                    advancePayment: advance?.amountPaid || 48000,
+                    entryDate: tenant?.entryDate || '2024-01-01',
+                  } as MonthlyLedgerItem);
+                  handleGenerateAdvanceReceipt({
+                    ...targetItem,
+                    advancePayment: advance?.amountPaid || targetItem.advancePayment || 48000,
+                  });
+                }}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-[11px] font-bold transition-colors cursor-pointer"
+                title="Generate Official Security Advance Receipt (Manager Signed)"
+              >
+                <Receipt className="w-3.5 h-3.5" />
+                <span>Generate Receipt</span>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs">
@@ -606,18 +643,24 @@ export const TenantPortal: React.FC<Props> = ({
                     : (isMarkedPaid ? (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000) : 0);
 
                 const hasAdvAmount = effectiveAdvAmount > 0;
+                const isNotPaid =
+                  rawAdvStatus.toLowerCase() === 'not paid' ||
+                  rawAdvStatus.toLowerCase() === 'not_paid';
+
                 const advStatus =
                   isOwnerFlat
                     ? 'N/A'
-                    : isMarkedPaid || (hasAdvAmount && rawAdvStatus !== 'N/A' && rawAdvStatus !== 'Not Paid' && rawAdvStatus !== 'not_paid')
+                    : isNotPaid
+                    ? 'Not Paid'
+                    : isMarkedPaid
                     ? 'Paid'
-                    : isMarkedPartial
+                    : isMarkedPartial || matchingAdv?.status === 'partially_paid'
                     ? 'Partially Paid'
                     : rawAdvStatus.toLowerCase() === 'adjusted'
                     ? 'Adjusted'
                     : rawAdvStatus.toLowerCase() === 'n/a'
                     ? 'N/A'
-                    : hasAdvAmount
+                    : (matchingAdv?.status === 'paid' || (!rawAdvStatus && hasAdvAmount))
                     ? 'Paid'
                     : 'Not Paid';
                 const rentStatus =
@@ -661,7 +704,7 @@ export const TenantPortal: React.FC<Props> = ({
                       >
                         {advStatus}
                       </span>
-                      {(hasAdvAmount || advStatus === 'Paid' || advStatus === 'Partially Paid') && advStatus !== 'N/A' && !isOwnerFlat && (
+                      {(advStatus === 'Paid' || advStatus === 'Partially Paid' || hasAdvAmount) && advStatus !== 'N/A' && advStatus !== 'Not Paid' && !isOwnerFlat && (
                         <div className="mt-1">
                           <button
                             onClick={() => handleGenerateAdvanceReceipt({ ...item, advancePayment: effectiveAdvAmount })}

@@ -766,18 +766,39 @@ export default function App() {
 
       // Sync advance accounts
       let updatedAdvanceAccounts = prev.advanceAccounts;
-      if (savedItem.advancePayment !== undefined) {
+      if (savedItem.advancePayment !== undefined || savedItem.advanceStatus !== undefined) {
         const advIndex = prev.advanceAccounts.findIndex((a) => a.flatId === savedItem.flatId);
         if (advIndex >= 0) {
           updatedAdvanceAccounts = [...prev.advanceAccounts];
           const acc = updatedAdvanceAccounts[advIndex];
-          const advPaid = Number(savedItem.advancePayment || 0);
+          const advPaidNum = Number(savedItem.advancePayment || 0);
+          const isNotPaid = savedItem.advanceStatus === 'Not Paid';
+          const isPartial = savedItem.advanceStatus === 'Partially Paid';
+          const isPaid = savedItem.advanceStatus === 'Paid';
+
+          const resolvedStatus: 'paid' | 'not_paid' | 'partially_paid' =
+            isNotPaid
+              ? 'not_paid'
+              : isPartial
+              ? 'partially_paid'
+              : isPaid
+              ? 'paid'
+              : advPaidNum > 0
+              ? 'paid'
+              : 'not_paid';
+
+          const resolvedPaid = isNotPaid ? 0 : advPaidNum;
+
           updatedAdvanceAccounts[advIndex] = {
             ...acc,
-            amountPaid: advPaid,
-            remainingAdvance: advPaid,
-            status: advPaid >= (acc.totalRequired || advPaid) ? 'paid' : (advPaid > 0 ? 'partially_paid' : 'not_paid'),
-            lastPaymentDate: savedItem.advanceDate || acc.lastPaymentDate || new Date().toISOString().split('T')[0],
+            totalRequired: acc.totalRequired || advPaidNum,
+            amountPaid: resolvedPaid,
+            remainingAdvance: resolvedPaid,
+            status: resolvedStatus,
+            lastPaymentDate:
+              resolvedStatus === 'paid' || resolvedStatus === 'partially_paid'
+                ? savedItem.advanceDate || acc.lastPaymentDate || new Date().toISOString().split('T')[0]
+                : undefined,
             updatedAt: new Date().toISOString(),
           };
         }
@@ -850,7 +871,7 @@ export default function App() {
           month: targetMonth,
           year: targetYear,
           advancePayment: isOwnerFlat ? 0 : src.advancePayment, // 5. Advance copied
-          advanceStatus: isOwnerFlat ? 'N/A' : (src.advanceStatus || (src.advancePayment > 0 ? 'Paid' : 'Not Paid')),
+          advanceStatus: isOwnerFlat ? 'N/A' : (src.advanceStatus || 'Not Paid'),
           advanceDate: isOwnerFlat ? undefined : src.advanceDate,
           flatRent,                     // 6. Flat Rent copied
           rentStatus,

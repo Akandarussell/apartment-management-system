@@ -852,18 +852,24 @@ export const OwnerDashboard: React.FC<Props> = ({
                       : (isMarkedPaid ? 48000 : 0);
 
                   const hasAdvAmount = effectiveAdvAmount > 0;
+                  const isNotPaid =
+                    rawAdvStatus.toLowerCase() === 'not paid' ||
+                    rawAdvStatus.toLowerCase() === 'not_paid';
+
                   const advStatus =
                     isOwnerFlat
                       ? 'N/A'
-                      : isMarkedPaid || (hasAdvAmount && rawAdvStatus !== 'N/A' && rawAdvStatus !== 'Not Paid' && rawAdvStatus !== 'not_paid')
+                      : isNotPaid
+                      ? 'Not Paid'
+                      : isMarkedPaid
                       ? 'Paid'
-                      : isMarkedPartial
+                      : isMarkedPartial || matchingAdv?.status === 'partially_paid'
                       ? 'Partially Paid'
                       : rawAdvStatus.toLowerCase() === 'adjusted'
                       ? 'Adjusted'
                       : rawAdvStatus.toLowerCase() === 'n/a'
                       ? 'N/A'
-                      : hasAdvAmount
+                      : (matchingAdv?.status === 'paid' || (!rawAdvStatus && hasAdvAmount))
                       ? 'Paid'
                       : 'Not Paid';
                   const rentStatus =
@@ -929,7 +935,7 @@ export const OwnerDashboard: React.FC<Props> = ({
                         >
                           {advStatus}
                         </span>
-                        {(hasAdvAmount || advStatus === 'Paid' || advStatus === 'Partially Paid') && advStatus !== 'N/A' && !isOwnerFlat && (
+                        {(advStatus === 'Paid' || advStatus === 'Partially Paid' || hasAdvAmount) && advStatus !== 'N/A' && advStatus !== 'Not Paid' && !isOwnerFlat && (
                           <div className="mt-1">
                             <button
                               onClick={() => handleGenerateAdvanceReceipt({ ...row, advancePayment: effectiveAdvAmount })}

@@ -336,7 +336,15 @@ export function generateInitialLedger(month: number = 10, year: number = 2026): 
       billingPeriod: `${year}-${String(month).padStart(2, '0')}`,
       month,
       year,
-      advancePayment: advance?.amountPaid || 0,
+      advancePayment: unit.flatId.includes('Owner') ? 0 : (advance?.amountPaid || 0),
+      advanceStatus: unit.flatId.includes('Owner')
+        ? 'N/A'
+        : advance?.status === 'partially_paid'
+        ? 'Partially Paid'
+        : (advance?.amountPaid && advance.amountPaid > 0)
+        ? 'Paid'
+        : 'Not Paid',
+      advanceDate: advance?.lastPaymentDate || (advance?.amountPaid && advance.amountPaid > 0 ? '2024-01-01' : undefined),
       flatRent,
       electricityBill: electricityAmount,
       parkingRent,
@@ -676,30 +684,59 @@ export function loadDatabaseState(): AppDatabaseState {
           }
         });
 
-        // Ensure any ledger item with Paid/Partially Paid advance status has its actual advance deposit amount
+        // Ensure all tenant ledger items have accurate advance deposit amount, status, and payment date
         parsed.ledgerItems = parsed.ledgerItems.map((item) => {
           const isOwner = (item.flatId || '').toLowerCase().includes('owner');
           if (isOwner) {
             return { ...item, advancePayment: 0, advanceStatus: 'N/A' };
           }
-          if (
-            (item.advanceStatus === 'Paid' || item.advanceStatus?.toLowerCase() === 'paid' || (item.advanceStatus as any) === 'partially_paid' || item.advanceStatus === 'Partially Paid') &&
-            (!item.advancePayment || item.advancePayment === 0)
-          ) {
-            const advAcc = parsed.advanceAccounts?.find((a) => a.flatId === item.flatId);
-            const unit = parsed.units?.find((u) => u.flatId === item.flatId);
-            const resolvedAdv = (advAcc?.amountPaid && advAcc.amountPaid > 0)
-              ? advAcc.amountPaid
-              : (advAcc?.totalRequired && advAcc.totalRequired > 0)
-              ? advAcc.totalRequired
-              : (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000);
+
+          const rawStatus = (item.advanceStatus || '').trim().toLowerCase();
+          const isNotPaid = rawStatus === 'not paid' || rawStatus === 'not_paid';
+
+          if (isNotPaid) {
             return {
               ...item,
-              advancePayment: resolvedAdv,
-              advanceStatus: 'Paid',
+              advancePayment: Number(item.advancePayment !== undefined ? item.advancePayment : 0),
+              advanceStatus: 'Not Paid',
+              advanceDate: undefined,
             };
           }
-          return item;
+
+          const advAcc = parsed.advanceAccounts?.find((a) => a.flatId === item.flatId);
+          const unit = parsed.units?.find((u) => u.flatId === item.flatId);
+          const standardAdv =
+            advAcc?.amountPaid && advAcc.amountPaid > 0
+              ? advAcc.amountPaid
+              : advAcc?.totalRequired && advAcc.totalRequired > 0
+              ? advAcc.totalRequired
+              : (unit?.monthlyRent ? unit.monthlyRent * 2 : 48000);
+
+          const resolvedAdvPayment =
+            Number(item.advancePayment || 0) > 0
+              ? Number(item.advancePayment)
+              : standardAdv;
+
+          const resolvedAdvStatus =
+            item.advanceStatus === 'Partially Paid' || (item.advanceStatus as any) === 'partially_paid' || advAcc?.status === 'partially_paid'
+              ? 'Partially Paid'
+              : item.advanceStatus === 'Adjusted'
+              ? 'Adjusted'
+              : item.advanceStatus === 'Paid' || rawStatus === 'paid'
+              ? 'Paid'
+              : (advAcc?.status === 'not_paid' || (!item.advanceStatus && Number(item.advancePayment || 0) === 0 && (!advAcc || advAcc.amountPaid === 0)))
+              ? 'Not Paid'
+              : 'Paid';
+
+          return {
+            ...item,
+            advancePayment: resolvedAdvPayment,
+            advanceStatus: resolvedAdvStatus,
+            advanceDate:
+              resolvedAdvStatus === 'Paid' || resolvedAdvStatus === 'Partially Paid'
+                ? item.advanceDate || advAcc?.lastPaymentDate || item.entryDate || '2024-01-01'
+                : undefined,
+          };
         });
       }
     }

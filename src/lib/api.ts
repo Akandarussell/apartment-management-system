@@ -197,7 +197,7 @@ export function mapDbRowToMonthlyLedgerItem(
     month: m,
     year: y,
     advancePayment,
-    advanceStatus: item.advance_status || (advancePayment > 0 ? 'Paid' : 'Not Paid'),
+    advanceStatus: item.advance_status || item.advanceStatus || 'Not Paid',
     advanceDate: item.advanceDate || item.advance_date || undefined,
     flatRent,
     rentStatus,
@@ -378,7 +378,7 @@ export function buildUpsertPayload(flat: any, selectedPeriod: string): Record<st
   const parkingRent = Number(flat.parking_rent ?? flat.parkingRent ?? 0);
   const godownRent = Number(flat.godown_rent ?? flat.godownRent ?? 0);
   const advancePayment = Number(flat.advance_payment ?? flat.advancePayment ?? 0);
-  const advanceStatus = flat.advance_status || flat.advanceStatus || (advancePayment > 0 ? 'Paid' : 'Not Paid');
+  const advanceStatus = flat.advance_status || flat.advanceStatus || 'Not Paid';
   const adjustedFromAdvance = Number(flat.adjusted_from_advance ?? flat.adjustedFromAdvance ?? 0);
   const totalPayable = Number(flat.total_payable ?? flat.totalPayable ?? (flatRent + eBillAmount + parkingRent + godownRent));
   const paymentStatus = normalizePaymentStatus(flat.payment_status || flat.paymentStatus || (dueAmount === 0 && totalPayable > 0 ? 'Paid' : paidAmount > 0 ? 'Partially Paid' : 'Not Paid'));

@@ -66,9 +66,13 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
     itemToEdit?.advancePayment !== undefined ? itemToEdit.advancePayment : 50000
   );
   const [advanceStatus, setAdvanceStatus] = useState<'Paid' | 'Not Paid' | 'Partially Paid' | 'Adjusted' | 'N/A'>(
-    itemToEdit?.advanceStatus || (itemToEdit && itemToEdit.advancePayment > 0 ? 'Paid' : 'Paid')
+    itemToEdit?.advanceStatus || 'Not Paid'
   );
-  const [advanceDate, setAdvanceDate] = useState<string>(itemToEdit?.advanceDate || itemToEdit?.entryDate || '2026-01-01');
+  const [advanceDate, setAdvanceDate] = useState<string>(
+    itemToEdit?.advanceStatus === 'Paid' || itemToEdit?.advanceStatus === 'Partially Paid'
+      ? (itemToEdit?.advanceDate || itemToEdit?.entryDate || '2026-01-01')
+      : ''
+  );
 
   const [flatRent, setFlatRent] = useState<string | number>(
     itemToEdit?.flatRent !== undefined ? itemToEdit.flatRent : 25000
@@ -108,10 +112,11 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
       setTenantPhone(itemToEdit.tenantPhone);
       setEntryDate(itemToEdit.entryDate);
       setAdvancePayment(itemToEdit.advancePayment !== undefined ? itemToEdit.advancePayment : 0);
-      setAdvanceStatus(itemToEdit.advanceStatus || (itemToEdit.advancePayment > 0 ? 'Paid' : 'Not Paid'));
+      const initAdvStatus = itemToEdit.advanceStatus || 'Not Paid';
+      setAdvanceStatus(initAdvStatus);
       const advInitDate = itemToEdit.advanceDate || itemToEdit.entryDate || '2026-01-01';
       setAdvanceDate(
-        itemToEdit.advanceStatus === 'Paid' || itemToEdit.advanceStatus === 'Partially Paid'
+        initAdvStatus === 'Paid' || initAdvStatus === 'Partially Paid'
           ? advInitDate
           : ''
       );
@@ -180,13 +185,19 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
       setEntryDate('2024-01-01');
     }
     if (advance) {
-      setAdvancePayment(advance.amountPaid || 0);
-      const isAdvPaid = advance.amountPaid >= advance.totalRequired;
-      setAdvanceStatus(isOwnerFlat ? 'N/A' : (isAdvPaid ? 'Paid' : 'Partially Paid'));
-      setAdvanceDate(isOwnerFlat ? '' : new Date().toISOString().split('T')[0]);
+      setAdvancePayment(advance.amountPaid || advance.totalRequired || 0);
+      const isAdvPaid = advance.status === 'paid' || (advance.amountPaid && advance.totalRequired && advance.amountPaid >= advance.totalRequired && advance.amountPaid > 0);
+      const isAdvPartial = advance.status === 'partially_paid';
+      const resolvedStatus = isOwnerFlat ? 'N/A' : isAdvPaid ? 'Paid' : isAdvPartial ? 'Partially Paid' : 'Not Paid';
+      setAdvanceStatus(resolvedStatus);
+      setAdvanceDate(isOwnerFlat || resolvedStatus === 'Not Paid' ? '' : (advance.lastPaymentDate || new Date().toISOString().split('T')[0]));
     } else if (isOwnerFlat) {
       setAdvancePayment(0);
       setAdvanceStatus('N/A');
+      setAdvanceDate('');
+    } else {
+      setAdvancePayment(0);
+      setAdvanceStatus('Not Paid');
       setAdvanceDate('');
     }
     if (isOwnerFlat) {
@@ -222,9 +233,20 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
   // 1. "when the status is N/A or not paid then why its shwoing option to choose a date from calender in monthly flat rent and the electricity bill field . it should not give option to pick a date."
   // 2. "and the adjust option is only be in the flat rent payment status not in the other section. when someone paid advance and want to leave the flat then the last month they will not pay flat rent, advance money will be adjausted as last month flat rent. and the paymen date will be same as advance date of the payment,"
   // When rentStatus is 'Adjusted', the payment date is fixed to advance date, so date picking is locked.
-  const isAdvanceDateEnabled = Number(advancePayment || 0) > 0 && !isOwnerFlat;
+  const isAdvanceDateEnabled = (advanceStatus === 'Paid' || advanceStatus === 'Partially Paid') && !isOwnerFlat;
   const isRentDateEnabled = rentStatus === 'Paid' || rentStatus === 'Partially Paid';
   const isElectricityDateEnabled = electricityStatus === 'Paid' || (electricityStatus as any) === 'Partially Paid';
+
+  const handleAdvanceStatusChange = (newStatus: 'Paid' | 'Not Paid' | 'Partially Paid' | 'Adjusted' | 'N/A') => {
+    setAdvanceStatus(newStatus);
+    if (newStatus === 'Paid' || newStatus === 'Partially Paid') {
+      if (!advanceDate) {
+        setAdvanceDate(new Date().toISOString().split('T')[0]);
+      }
+    } else {
+      setAdvanceDate('');
+    }
+  };
 
   const handleAdvanceDateChange = (newDate: string) => {
     setAdvanceDate(newDate);
@@ -328,9 +350,7 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
     const resolvedAdvStatus: 'Paid' | 'Not Paid' | 'Partially Paid' | 'Adjusted' | 'N/A' =
       isOwnerFlat
         ? 'N/A'
-        : advAmountNum > 0
-        ? 'Paid'
-        : 'Not Paid';
+        : advanceStatus;
 
     const savedItem: MonthlyLedgerItem = {
       id: itemToEdit?.id || `ledger-${flatId}-${month}-${year}`,
@@ -347,7 +367,7 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
       year,
       advancePayment: advAmountNum,
       advanceStatus: resolvedAdvStatus,
-      advanceDate: advAmountNum > 0 ? (advanceDate || entryDate) : undefined,
+      advanceDate: (resolvedAdvStatus === 'Paid' || resolvedAdvStatus === 'Partially Paid') ? (advanceDate || entryDate) : undefined,
       flatRent: Number(flatRent || 0),
       rentStatus,
       rentPaymentDate:
@@ -507,7 +527,8 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
               </span>
               <span className="text-[11px] text-indigo-700">Security Advance Deposit Record</span>
             </div>
-            <div className={`grid grid-cols-1 ${isAdvanceDateEnabled ? 'sm:grid-cols-2' : 'sm:grid-cols-1'} gap-3`}>
+            <div className={`grid grid-cols-1 ${isAdvanceDateEnabled ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3`}>
+              {/* Field 1: Advance Amount */}
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Advance Amount (BDT)</label>
                 <input
@@ -518,30 +539,38 @@ export const ManualLedgerEntryModal: React.FC<Props> = ({
                     const val = e.target.value;
                     if (val === '' || /^\d*\.?\d*$/.test(val)) {
                       setAdvancePayment(val);
-                      const num = Number(val || 0);
-                      if (num > 0) {
-                        setAdvanceStatus('Paid');
-                        if (!advanceDate) {
-                          setAdvanceDate(new Date().toISOString().split('T')[0]);
-                        }
-                      } else {
-                        setAdvanceStatus(isOwnerFlat ? 'N/A' : 'Not Paid');
-                        setAdvanceDate('');
-                      }
                     }
                   }}
                   placeholder="e.g. 50000"
                   className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-900 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                 />
               </div>
+
+              {/* Field 2: Payment Status */}
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Payment Status</label>
+                <select
+                  value={advanceStatus}
+                  onChange={(e) => handleAdvanceStatusChange(e.target.value as any)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                >
+                  <option value="Paid">Paid</option>
+                  <option value="Not Paid">Not Paid</option>
+                  <option value="Partially Paid">Partially Paid</option>
+                  <option value="Adjusted">Adjusted</option>
+                  <option value="N/A">N/A</option>
+                </select>
+              </div>
+
+              {/* Field 3: Payment Date - calendar input only shows when payment status is Paid / Partially Paid */}
               {isAdvanceDateEnabled && (
                 <div>
                   <DateInputDDMMYYYY
-                    label="Date of Payment"
+                    label="Payment Date"
                     value={advanceDate}
                     onChange={handleAdvanceDateChange}
                     isEnabled={isAdvanceDateEnabled}
-                    lockedReason="Locked: Enter Advance Amount > 0 to set payment date"
+                    lockedReason="Locked: Select Paid status to set payment date"
                   />
                 </div>
               )}
